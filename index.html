@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Explore how words travel across languages and geography using Wiktionary etymology data." />
+    <title>Etymon — words have travelled</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#" aria-label="Etymon home">
+        <span class="brand-mark" aria-hidden="true">e</span>
+        <span>ETYMON</span>
+      </a>
+      <p class="header-note">Words have travelled.<br />See where they went.</p>
+      <a class="source-link" href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Data from Wiktionary ↗</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="eyebrow"><span></span> Etymology, made visible</div>
+        <h1>Every word<br />has a <em>where.</em></h1>
+        <p>Trace a meaning across languages, or follow one word backward through centuries of contact, inheritance, and change.</p>
+      </section>
+
+      <section class="workspace" aria-label="Etymology map explorer">
+        <div class="mode-tabs" role="tablist" aria-label="Map mode">
+          <button id="compare-tab" class="mode-tab active" role="tab" aria-selected="true" data-mode="compare">
+            <span>01</span> Across languages
+          </button>
+          <button id="journey-tab" class="mode-tab" role="tab" aria-selected="false" data-mode="journey">
+            <span>02</span> One word's journey
+          </button>
+        </div>
+
+        <div class="search-panel">
+          <form id="compare-form" class="search-form">
+            <label for="concept-input">Map a meaning</label>
+            <div class="search-row">
+              <input id="concept-input" name="concept" value="church" autocomplete="off" spellcheck="false" />
+              <button type="submit" aria-label="Map this meaning">Map it <span>↗</span></button>
+            </div>
+            <div class="examples" aria-label="Example searches">
+              <span>Try</span>
+              <button type="button" data-example="church">church</button>
+              <button type="button" data-example="pineapple">pineapple</button>
+              <button type="button" data-example="tea">tea</button>
+            </div>
+          </form>
+
+          <form id="journey-form" class="search-form hidden">
+            <label for="word-input">Trace a word</label>
+            <div class="journey-fields">
+              <input id="word-input" name="word" value="cerkiew" autocomplete="off" spellcheck="false" aria-label="Word" />
+              <select id="language-select" name="language" aria-label="Language"></select>
+              <button type="submit" aria-label="Trace this word">Trace it <span>↗</span></button>
+            </div>
+            <div class="examples" aria-label="Example journeys">
+              <span>Try</span>
+              <button type="button" data-word="cerkiew" data-language="pl">Polish cerkiew</button>
+              <button type="button" data-word="chocolate" data-language="en">English chocolate</button>
+              <button type="button" data-word="algebra" data-language="en">English algebra</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="map-shell">
+          <div class="map-heading">
+            <div>
+              <p id="map-kicker">A meaning, many histories</p>
+              <h2 id="map-title">How the world says “church”</h2>
+            </div>
+            <div id="live-status" class="live-status" aria-live="polite"><i></i> Live Wiktionary data</div>
+          </div>
+          <div class="map-stage">
+            <div id="map" aria-label="Interactive etymology map"></div>
+            <svg id="journey-lines" class="journey-lines" aria-hidden="true"></svg>
+            <div id="map-message" class="map-message hidden"></div>
+            <div id="map-drilldown" class="map-drilldown hidden">
+              <button id="map-back" type="button">← World</button>
+              <span id="map-place"></span>
+            </div>
+            <div class="map-attribution">Locations: Glottolog · Boundaries: Natural Earth / geoBoundaries · Speaker areas may differ</div>
+          </div>
+        </div>
+
+        <aside class="story-panel" aria-live="polite">
+          <div class="story-header">
+            <span id="story-index">01 / OVERVIEW</span>
+            <button id="collapse-story" type="button" aria-label="Collapse details">−</button>
+          </div>
+          <div id="story-content"></div>
+        </aside>
+      </section>
+
+      <section class="method-note">
+        <span>How to read the map</span>
+        <p>Numbered regions count located word entries and can be opened down to smaller administrative units. At close range, click any word label to open its Wiktionary entry. Glottolog points locate languages without claiming that an administrative boundary is their speaker territory.</p>
+      </section>
+    </main>
+
+    <footer>
+      <span>ETYMON / A Wiktionary experiment</span>
+      <span>Words are evidence of contact.</span>
+    </footer>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
