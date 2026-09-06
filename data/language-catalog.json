@@ -1,0 +1,24 @@
+{
+  "generated": "2026-09-06T06:16:59.254Z",
+  "languages": 8243,
+  "located": 7490,
+  "walsLinked": 2353,
+  "sources": {
+    "wiktionary": {
+      "url": "https://en.wiktionary.org/w/index.php?title=Module:languages/code_to_canonical_name&action=raw",
+      "sha256": "8900b3d82bcd37cdc792e31af909788f5d77445d8c5b613f124598119b47b269"
+    },
+    "glottolog": {
+      "url": "https://raw.githubusercontent.com/glottolog/glottolog-cldf/master/cldf/languages.csv",
+      "sha256": "1a50a393bc81568b656f9522be18aa4f80f38e94309ba6c863d583234adfbb89"
+    },
+    "wals": {
+      "url": "https://raw.githubusercontent.com/cldf-datasets/wals/master/cldf/languages.csv",
+      "sha256": "10e0742f158dadd4ef9484797ef7606a337306ee49a110a58c8e658826d3290e"
+    },
+    "iso": {
+      "url": "https://iso639-3.sil.org/sites/iso639-3/files/downloads/iso-639-3.tab",
+      "sha256": "7a5ac370703ea0897356a8c383f2147865caf479e41c1c7bd96cc4c5f65e6907"
+    }
+  }
+}

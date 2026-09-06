@@ -1,611 +1,439 @@
-import {
-  CLUSTER_COLORS, DEMO_CERKIEW, DEMO_CHURCH, LANGUAGES, TYPE_LABELS,
-  languageName, wiktionaryUrl
-} from "./data.js";
-import {
-  assignEntriesToFeatures, featureIso3, featureName, fetchAdministrativeBoundaries, loadGlottolog, loadSpeakerArea
-} from "./geography.js";
-import {
-  buildJourney, chooseCluster, enrichTranslations, fetchWikitext, parseEtymology, parseTranslations
-} from "./wiktionary.js";
+import { LANGUAGES, TYPE_LABELS, languageName, wiktionaryUrl } from "./data.js";
+import { loadSpeakerArea } from "./geography.js";
+import { EARLIEST, PRESENT, formatYear, inPeriod, loadLanguageCatalog, periodLabel, resolveLanguage } from "./languages.js";
+import { buildJourney, enrichTranslations, fetchWikitext, getLanguageSection, parseTranslationSenses } from "./wiktionary.js";
+import { clusterPoints, colourForSource, prepareBasemap } from "./map-model.js";
 
-const WORLD_URL = "https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json";
+const $ = (selector) => document.querySelector(selector);
 const state = {
-  mode: "compare",
-  map: null,
-  countryLayer: null,
-  adminLayer: null,
-  speakerLayer: null,
-  markers: null,
-  badges: null,
-  countryColors: new Map(),
-  worldFeatures: [],
-  worldLayers: new Map(),
-  journeyNodes: [],
-  lastComparison: DEMO_CHURCH,
-  clusters: new Map(),
-  concept: "church",
-  source: "demo",
-  drill: null,
-  drillRevision: 0,
-  searchRevision: 0
+  mode:"compare", map:null, basemap:null, fallback:null, markers:null, areas:null,
+  entries:[], senses:[], concept:"water", nodes:[], region:null, search:0, areaRevision:0,
+  controller:null, entryQuery:"", entryLimit:60, areaTimer:null, messageTimer:null
 };
+const esc = (value = "") => String(value).replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[c]);
+const key = (item) => item.code + ":" + item.term;
+const display = (item) => item.display || item.term;
+const locateIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 4 13 21l-3-7-7-3Z"/></svg>';
+const period = () => ({from:+$("#time-from").value, to:+$("#time-to").value, undated:$("#undated-toggle").checked});
+const visible = (items) => { const p=period(); return items.filter((i) => inPeriod(i.code,p.from,p.to,p.undated)); };
+const color = (item) => colourForSource(item.source, item.sourceName);
 
-const ui = {
-  tabs: [...document.querySelectorAll(".mode-tab")],
-  compareForm: document.querySelector("#compare-form"),
-  journeyForm: document.querySelector("#journey-form"),
-  concept: document.querySelector("#concept-input"),
-  word: document.querySelector("#word-input"),
-  language: document.querySelector("#language-select"),
-  kicker: document.querySelector("#map-kicker"),
-  title: document.querySelector("#map-title"),
-  status: document.querySelector("#live-status"),
-  storyIndex: document.querySelector("#story-index"),
-  story: document.querySelector("#story-content"),
-  storyPanel: document.querySelector(".story-panel"),
-  collapse: document.querySelector("#collapse-story"),
-  message: document.querySelector("#map-message"),
-  lines: document.querySelector("#journey-lines"),
-  drilldown: document.querySelector("#map-drilldown"),
-  back: document.querySelector("#map-back"),
-  place: document.querySelector("#map-place")
-};
-
-function escapeHTML(value = "") {
-  return String(value).replace(/[&<>'"]/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
-  })[character]);
+function status(text, kind = "live") {
+  $("#live-status").className = "live-status " + kind;
+  $("#live-status").innerHTML = "<i></i>" + esc(text);
 }
-
-function setStatus(label, kind = "live") {
-  ui.status.className = `live-status ${kind}`;
-  ui.status.innerHTML = `<i></i>${escapeHTML(label)}`;
+function message(text) {
+  clearTimeout(state.messageTimer);
+  $("#map-message").textContent = text;
+  $("#map-message").classList.remove("hidden");
+  state.messageTimer = setTimeout(() => $("#map-message").classList.add("hidden"), 8500);
 }
-
-function showMessage(message) {
-  ui.message.textContent = message;
-  ui.message.classList.remove("hidden");
-  window.setTimeout(() => ui.message.classList.add("hidden"), 6000);
-}
-
-function initLanguageSelect() {
-  const modern = Object.entries(LANGUAGES)
-    .filter(([, item]) => !item.historical)
-    .sort((a, b) => a[1].name.localeCompare(b[1].name));
-  for (const [code, item] of modern) {
-    const option = document.createElement("option");
-    option.value = code;
-    option.textContent = item.name;
-    option.selected = code === "pl";
-    ui.language.append(option);
+function padding() {
+  if (innerWidth <= 700) {
+    const height = $(".info-card").getBoundingClientRect().height;
+    return {paddingTopLeft:[40,105], paddingBottomRight:[55,height+45]};
   }
+  return {paddingTopLeft:[$(".info-card").classList.contains("collapsed") ? 70 : 410,80], paddingBottomRight:[90,80]};
 }
-
-function initMap() {
-  if (!window.L) {
-    document.querySelector("#map").innerHTML = '<p class="map-message">The map library could not load. Check your connection and reload.</p>';
-    return;
+function fitItems(items, maxZoom=7) {
+  const points = items.map((i) => i.point || LANGUAGES[i.code]?.point).filter(Boolean);
+  if (!state.map || !points.length) return;
+  state.map.fitBounds(points, {...padding(), maxZoom, animate:!matchMedia("(prefers-reduced-motion: reduce)").matches});
+}
+function pointOnMap(point) {
+  const longitude = point[1] + 360 * Math.round((state.map.getCenter().lng - point[1]) / 360);
+  return [point[0], longitude];
+}
+function applyBasemapOptions() {
+  const gl = state.basemap?.getMaplibreMap();
+  if (gl?.isStyleLoaded()) {
+    for (const layer of gl.getStyle().layers) {
+      if (layer["source-layer"] === "boundary") gl.setLayoutProperty(layer.id,"visibility",$("#borders-toggle").checked ? "visible":"none");
+      else if (layer.type === "symbol") gl.setLayoutProperty(layer.id,"visibility",$("#labels-toggle").checked ? "visible":"none");
+    }
   }
-  state.map = window.L.map("map", {
-    center: [27, 10], zoom: 2, minZoom: 1, maxZoom: 9,
-    zoomControl: true, worldCopyJump: true, attributionControl: false
-  });
-  state.markers = window.L.layerGroup().addTo(state.map);
-  state.badges = window.L.layerGroup().addTo(state.map);
-  state.map.on("zoom move resize", drawJourneyLines);
-  state.map.on("zoomend", () => {
-    if (state.mode === "compare" && !state.drill) renderComparisonGeography();
-  });
-  loadBoundaries();
+  state.fallback?.setStyle({weight:$("#borders-toggle").checked ? .6:0, color:"#95a99a"});
 }
-
-async function loadBoundaries() {
+async function initMap() {
+  if (!window.L) { message("The map could not load. Please check your connection and reload."); return; }
+  state.map = L.map("map", {
+    center:[25,25], zoom:2.4, zoomSnap:.1, minZoom:1, maxZoom:14,
+    zoomControl:false, attributionControl:false, worldCopyJump:true,
+    maxBounds:[[-85,-Infinity],[85,Infinity]], maxBoundsViscosity:1
+  });
+  L.control.zoom({position:"topright"}).addTo(state.map);
+  state.map.createPane("land").style.zIndex=200;
+  state.map.createPane("territories").style.zIndex=350;
+  state.markers=L.layerGroup().addTo(state.map);
+  state.areas=L.layerGroup().addTo(state.map);
+  state.map.on("move zoom resize", drawJourneyLines);
+  state.map.on("moveend", () => {
+    if (state.mode === "compare") renderGeography();
+    scheduleAreas();
+  });
+  state.map.on("resize", () => { if(state.mode === "compare") renderGeography(); });
   try {
-    const response = await fetch(WORLD_URL);
-    if (!response.ok) throw new Error("Boundary download failed");
-    const geojson = await response.json();
-    state.worldFeatures = geojson.features;
-    state.countryLayer = window.L.geoJSON(geojson, {
-      style: boundaryStyle,
-      onEachFeature(feature, layer) {
-        state.worldLayers.set(feature, layer);
-        layer.on({
-          mouseover: (event) => event.target.setStyle({ weight: 1.4, fillOpacity: .82 }),
-          mouseout: (event) => state.countryLayer.resetStyle(event.target),
-          click: () => {
-            const entries = feature.properties?._etymonEntries || [];
-            if (state.mode === "compare" && entries.length) openCountry(feature, layer, entries);
-          }
-        });
-      }
-    }).addTo(state.map);
-    state.countryLayer.bringToBack();
-    if (state.mode === "compare") renderComparisonGeography();
+    if (!L.maplibreGL) throw new Error("Vector basemap unavailable");
+    const response=await fetch("https://tiles.openfreemap.org/styles/positron");
+    if (!response.ok) throw new Error("Basemap unavailable");
+    const style=prepareBasemap(await response.json());
+    state.basemap=L.maplibreGL({style, interactive:false, attributionControl:false}).addTo(state.map);
+    state.basemap.getMaplibreMap().on("load", applyBasemapOptions);
   } catch {
-    showMessage("Country boundaries are unavailable; language locations still work.");
+    message("Using a simplified land map while the detailed basemap is unavailable.");
+    try {
+      const response=await fetch("https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json");
+      if (!response.ok) throw new Error("Land unavailable");
+      state.fallback=L.geoJSON(await response.json(), {pane:"land", interactive:false, style:{weight:0, fillColor:"#eff1e8", fillOpacity:1}}).addTo(state.map);
+      applyBasemapOptions();
+    } catch { message("Basemap unavailable. Word locations and entry links still work."); }
   }
 }
 
-function boundaryStyle(feature) {
-  const color = state.countryColors.get(featureName(feature));
-  const count = feature.properties?._etymonEntries?.length || 0;
-  return {
-    color: count ? "#202d31" : "rgba(241,239,230,.22)",
-    weight: count ? 1 : .55,
-    fillColor: color || "#364348",
-    fillOpacity: count ? .7 : .6
-  };
+function resourceLinks(code) {
+  const meta=LANGUAGES[code] || {};
+  return (meta.wals || []).map((profile) => '<a href="https://wals.info/languoid/lect/wals_code_'+encodeURIComponent(profile.id)+'" target="_blank" rel="noreferrer" title="'+esc(profile.name+' · '+profile.family+' · '+profile.genus)+'">WALS'+(meta.wals.length>1 ? ' · '+esc(profile.name):'')+' ↗</a>').join(" · ");
 }
-
-function refreshBoundaries() {
-  if (state.countryLayer) state.countryLayer.setStyle(boundaryStyle);
+function popup(item) {
+  const meta=LANGUAGES[item.code] || {};
+  const node=document.createElement("div");
+  node.className="etymon-popup";
+  node.innerHTML='<div class="popup-lang">'+esc(languageName(item.code))+'</div><a class="popup-word" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">'+esc(display(item))+'</a>'+
+    (item.transliteration ? '<p>'+esc(item.transliteration)+'</p>':'')+
+    '<p>'+esc(meta.region || meta.locationSource || "Representative location")+' · '+esc(periodLabel(item.code))+'</p>'+
+    '<a class="popup-action" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">Open Wiktionary entry ↗</a><p>'+resourceLinks(item.code)+'</p>';
+  return node;
 }
-
-function clearMap({ preserveDrill = false } = {}) {
-  state.markers?.clearLayers();
-  state.badges?.clearLayers();
-  state.countryColors.clear();
-  state.journeyNodes = [];
-  ui.lines.innerHTML = "";
-  if (!preserveDrill) resetDrill(false);
+function wordLabel(item) {
+  const node=document.createElement("a");
+  node.className="word-chip";
+  node.style.setProperty("--chip",color(item));
+  node.href=wiktionaryUrl(item.term,item.code);
+  node.target="_blank"; node.rel="noreferrer";
+  node.innerHTML="<b>"+esc(display(item))+"</b><small>"+esc(languageName(item.code))+" ↗</small>";
+  node.addEventListener("click",e=>e.stopPropagation());
+  return node;
 }
-
-function resetDrill(move = true) {
-  state.drillRevision += 1;
-  if (state.adminLayer) state.map?.removeLayer(state.adminLayer);
-  if (state.speakerLayer) state.map?.removeLayer(state.speakerLayer);
-  state.adminLayer = null;
-  state.speakerLayer = null;
-  state.drill = null;
-  ui.drilldown.classList.add("hidden");
-  if (state.countryLayer && !state.map.hasLayer(state.countryLayer)) state.countryLayer.addTo(state.map);
-  if (move) state.map?.setView([28, 12], 2, { animate: true });
-  if (state.mode === "compare") renderComparisonGeography();
+function addWord(item, permanent=true) {
+  const point=LANGUAGES[item.code]?.point;
+  if(!state.map || !point) return;
+  const marker=L.circleMarker(pointOnMap(point),{radius:5, color:"#fff", weight:2, fillColor:color(item),fillOpacity:1}).addTo(state.markers);
+  marker.bindPopup(popup(item));
+  marker.bindTooltip(wordLabel(item),{permanent,interactive:true,direction:"right",offset:[9,0],className:"word-label",opacity:1});
+  return marker;
 }
-
-function makePopup(item, color) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "etymon-popup";
-  const language = document.createElement("div");
-  language.className = "popup-lang";
-  language.textContent = languageName(item.code);
-  const link = document.createElement("a");
-  link.href = wiktionaryUrl(item.term, item.code);
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  link.textContent = item.term;
-  link.style.textDecorationColor = color;
-  const detail = document.createElement("p");
-  detail.textContent = item.sourceName && item.sourceName !== "No explicit source"
-    ? `Etymology grouped by ${item.sourceName}` : "No explicit source template found";
-  const action = document.createElement("a");
-  action.className = "popup-action";
-  action.href = link.href;
-  action.target = "_blank";
-  action.rel = "noreferrer";
-  action.textContent = "Open Wiktionary entry ↗";
-  wrapper.append(language, link, detail, action);
-  return wrapper;
+function regionName(entries) {
+  const codes=[...new Set(entries.map(i=>i.code))];
+  if(codes.length===1) return languageName(codes[0]);
+  const historical=entries.map(i=>LANGUAGES[i.code]?.region).filter(Boolean);
+  if(historical.length===entries.length && new Set(historical).size===1) return historical[0];
+  return languageName(codes[0])+" + "+(codes.length-1);
 }
-
-function makeWordLabel(item, color) {
-  const chip = document.createElement("a");
-  chip.className = "word-chip";
-  chip.style.setProperty("--chip", color);
-  chip.href = wiktionaryUrl(item.term, item.code);
-  chip.target = "_blank";
-  chip.rel = "noreferrer";
-  chip.title = `Open ${item.term} in Wiktionary`;
-  chip.addEventListener("click", (event) => event.stopPropagation());
-  const word = document.createElement("b");
-  word.textContent = item.term;
-  const lang = document.createElement("small");
-  lang.textContent = `${languageName(item.code)} ↗`;
-  chip.append(word, lang);
-  return chip;
-}
-
-function addWordMarker(item, permanent = true) {
-  const meta = LANGUAGES[item.code];
-  if (!meta?.point) return;
-  const color = item._color || CLUSTER_COLORS[0];
-  const marker = window.L.circleMarker(meta.point, {
-    radius: 6, color: "#202d31", weight: 2, fillColor: color, fillOpacity: 1
-  }).addTo(state.markers);
-  marker.bindPopup(makePopup(item, color));
-  marker.bindTooltip(makeWordLabel(item, color), {
-    permanent, interactive: true,
-    direction: meta.point[1] > 70 ? "left" : "right",
-    offset: [5, 0], className: "word-label", opacity: 1
-  });
-}
-
-function addRegionBadge(feature, layer, entries, onClick, levelLabel) {
-  if (!entries.length) return;
-  const name = featureName(feature);
-  const center = layer.getBounds().getCenter();
-  const icon = window.L.divIcon({
-    className: "region-cluster-wrap",
-    html: `<button class="region-cluster" aria-label="Zoom to ${escapeHTML(name)}, ${entries.length} entries"><b>${entries.length}</b><span>${escapeHTML(name)}</span><small>${escapeHTML(levelLabel)} · zoom in</small></button>`,
-    iconSize: [112, 62], iconAnchor: [56, 31]
-  });
-  const marker = window.L.marker(center, { icon, zIndexOffset: 300 }).addTo(state.badges);
-  marker.on("click", onClick);
-}
-
-function assignWorldEntries(items) {
-  if (!state.worldFeatures.length) return;
-  assignEntriesToFeatures(state.worldFeatures, items);
-  for (const feature of state.worldFeatures) {
-    const entries = feature.properties._etymonEntries || [];
-    if (!entries.length) continue;
-    const dominant = entries.reduce((counts, entry) => counts.set(entry._color, (counts.get(entry._color) || 0) + 1), new Map());
-    const color = [...dominant.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-    state.countryColors.set(featureName(feature), color);
-  }
-  refreshBoundaries();
-}
-
-function renderComparisonGeography() {
-  if (state.mode !== "compare" || state.drill) return;
+function renderGeography() {
+  if(!state.map || state.mode!=="compare") return;
   state.markers.clearLayers();
-  state.badges.clearLayers();
-  assignWorldEntries(state.lastComparison);
-  if (!state.worldFeatures.length || state.map.getZoom() >= 3.4) {
-    for (const item of state.lastComparison) addWordMarker(item, state.map.getZoom() >= 4);
-    return;
+  const entries=visible(state.entries).filter(i=>LANGUAGES[i.code]?.point && state.map.getBounds().pad(.3).contains(pointOnMap(LANGUAGES[i.code].point)));
+  const projected=entries.map(item=>({item, point:state.map.project(pointOnMap(LANGUAGES[item.code].point))}));
+  const groups=clusterPoints(projected, state.map.getZoom()>=7 ? 45:75);
+  for(const group of groups) {
+    const items=group.items;
+    if(items.length===1) { addWord(items[0],state.map.getZoom()>=3); continue; }
+    const label=regionName(items);
+    const icon=L.divIcon({className:"region-cluster-wrap",iconSize:[54,76],iconAnchor:[27,27],
+      html:'<button class="region-cluster" aria-label="'+esc(label+', '+items.length+' entries. Explore nearby languages.')+'"><b>'+items.length+'</b></button><span class="region-label">'+esc(label)+'</span>'});
+    const marker=L.marker(state.map.unproject(group.point),{icon,keyboard:false}).addTo(state.markers);
+    marker.on("click",()=>openRegion(items,label));
   }
-  for (const feature of state.worldFeatures) {
-    const entries = feature.properties?._etymonEntries || [];
-    const layer = state.worldLayers.get(feature);
-    if (layer && entries.length) addRegionBadge(feature, layer, entries, () => openCountry(feature, layer, entries), "country");
+}
+function openRegion(items,name) {
+  state.region=new Set(items.map(key));
+  state.entryQuery=""; state.entryLimit=60;
+  $("#map-drilldown").classList.remove("hidden");
+  $("#map-place").textContent=name;
+  renderStory();
+  fitItems(items,Math.min(14,state.map.getZoom()+2.5));
+}
+function allResults() {
+  state.region=null;
+  state.entryQuery="";
+  $("#map-drilldown").classList.add("hidden");
+  if(state.mode==="compare") { renderStory(); fitItems(visible(state.entries),5); }
+  else fitItems(visible(state.nodes),6);
+}
+function entryRows(items) {
+  return items.map(item=>{
+    const meta=LANGUAGES[item.code] || {};
+    const wals=resourceLinks(item.code);
+    return '<div class="entry-row" style="--entry-color:'+color(item)+'"><i class="entry-dot"></i><div class="entry-main"><a class="entry-link" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer"><b>'+esc(display(item))+'</b><span>'+esc(languageName(item.code))+' ↗</span></a><div class="entry-meta">'+
+      (item.transliteration ? esc(item.transliteration)+' · ':'')+
+      (meta.historical ? esc(meta.era || "Historical / extinct")+' · ':'')+
+      (!meta.point ? "Location unavailable · ":"")+
+      wals+'</div></div>'+
+      (meta.point ? '<button class="locate-button" type="button" data-entry="'+esc(key(item))+'" aria-label="Locate '+esc(languageName(item.code)+' '+display(item))+'">'+locateIcon+'</button>':'')+'</div>';
+  }).join("");
+}
+function currentEntries() {
+  return visible(state.entries).filter(i=>!state.region || state.region.has(key(i)));
+}
+function renderEntryList() {
+  const query=state.entryQuery.toLowerCase();
+  const items=currentEntries().filter(i=>[i.term,i.display,i.code,languageName(i.code),i.transliteration].some(v=>v?.toLowerCase().includes(query)));
+  const target=$("#entry-list");
+  if(target) target.innerHTML=(entryRows(items.slice(0,state.entryLimit)) || '<p class="empty-state">No matching forms. Try another language or widen the time range.</p>')+
+    (items.length>state.entryLimit ? '<button id="more-entries" class="more-entries" type="button">Show more · '+(items.length-state.entryLimit)+' remaining</button>':'');
+}
+function renderStory() {
+  const items=currentEntries();
+  const located=items.filter(i=>LANGUAGES[i.code]?.point);
+  const languages=new Set(items.map(i=>i.code));
+  const clusters=new Map();
+  for(const item of items) {
+    const label=item.sourceName || "Etymology not loaded";
+    const group=clusters.get(label) || {label,color:color(item),count:0};
+    group.count++; clusters.set(label,group);
   }
+  const p=period();
+  const excluded=state.entries.length-visible(state.entries).length;
+  $("#map-kicker").textContent=state.region ? "NEARBY LANGUAGES":"LANGUAGES, WITHOUT BORDERS";
+  $("#map-title").textContent='How we say “'+state.concept+'”';
+  $("#story-content").innerHTML='<div class="stat-row"><div class="stat"><b>'+languages.size+'</b><span>languages</span></div><div class="stat"><b>'+items.length+'</b><span>word forms</span></div><div class="stat"><b>'+located.length+'</b><span>mapped forms</span></div></div>'+
+    (excluded ? '<p class="source-caveat">'+excluded+' forms outside this period or undated. Reset the time range to see all '+state.entries.length+' forms.</p>':'')+
+    (p.to<PRESENT ? '<p class="source-caveat">Historical points are approximate. Contemporary speaker territories are hidden for this period.</p>':'')+
+    '<div class="legend-title">Words &amp; language profiles</div><input id="entry-filter" class="entry-filter" type="search" placeholder="Find a language or form…" aria-label="Filter result languages and words" value="'+esc(state.entryQuery)+'" /><div id="entry-list"></div>'+
+    '<details><summary>Etymological source colours</summary><ul class="cluster-list">'+[...clusters.values()].sort((a,b)=>b.count-a.count).map(c=>'<li style="--color:'+c.color+'"><i></i><b>'+esc(c.label)+'</b><small>'+c.count+'</small></li>').join("")+'</ul><p class="source-caveat">The first explicit source template in each entry determines its group. Matching colours suggest a shared source; they are not a complete cognacy analysis.</p></details>';
+  renderEntryList();
 }
-
-function renderComparison(items, concept, source = "live") {
-  clearMap();
-  state.lastComparison = items.filter((item) => LANGUAGES[item.code]?.point);
-  state.concept = concept;
-  state.source = source;
-  const sources = [...new Set(state.lastComparison.map((item) => item.source || item.code))];
-  const colorBySource = new Map(sources.map((key, index) => [key, CLUSTER_COLORS[index % CLUSTER_COLORS.length]]));
-  const clusters = new Map();
-  for (const item of state.lastComparison) {
-    const clusterKey = item.source || item.code;
-    item._color = colorBySource.get(clusterKey);
-    const cluster = clusters.get(clusterKey) || { color: item._color, label: item.sourceName || languageName(clusterKey), count: 0 };
-    cluster.count += 1;
-    clusters.set(clusterKey, cluster);
-  }
-  state.clusters = clusters;
-  renderComparisonGeography();
-  state.countryLayer?.bringToBack();
-  state.map?.setView([28, 12], 2, { animate: false });
-  ui.kicker.textContent = "Country counts · click to reveal subregions";
-  ui.title.textContent = `How the world says “${concept}”`;
-  renderComparisonStory(state.lastComparison, clusters, concept, source);
+function renderComparison() {
+  state.nodes=[]; $("#journey-lines").innerHTML="";
+  renderStory(); renderGeography(); scheduleAreas();
 }
-
-function entryLinks(items, limit = 18) {
-  return items.slice(0, limit).map((item) => `
-    <a class="entry-link" href="${wiktionaryUrl(item.term, item.code)}" target="_blank" rel="noreferrer">
-      <b>${escapeHTML(item.term)}</b><span>${escapeHTML(languageName(item.code))} ↗</span>
-    </a>`).join("");
+function scheduleAreas() {
+  clearTimeout(state.areaTimer);
+  state.areaRevision++;
+  state.areaTimer=setTimeout(renderAreas,180);
 }
-
-function renderComparisonStory(items, clusters, concept, source) {
-  ui.storyIndex.textContent = "01 / OVERVIEW";
-  const largest = [...clusters.values()].sort((a, b) => b.count - a.count)[0];
-  const clusterHTML = [...clusters.values()].sort((a, b) => b.count - a.count).map((cluster) => `
-    <li style="--color:${cluster.color}"><i></i><b>${escapeHTML(cluster.label)}</b><small>${cluster.count} ${cluster.count === 1 ? "word" : "words"}</small></li>
-  `).join("");
-  ui.story.innerHTML = `
-    <p class="story-lede"><em>${escapeHTML(concept)}</em> crosses the map in ${items.length} located forms${largest ? `, with the largest visible group linked to ${escapeHTML(largest.label)}` : ""}.</p>
-    <div class="stat-row"><div class="stat"><b>${items.length}</b><span>locations mapped</span></div><div class="stat"><b>${clusters.size}</b><span>source groups</span></div></div>
-    <div class="legend-title">Open a Wiktionary entry</div>
-    <div class="entry-links">${entryLinks(items)}</div>
-    ${items.length > 18 ? `<p class="source-caveat">Zoom into a region to see its remaining ${items.length - 18} entries.</p>` : ""}
-    <div class="legend-title spaced">Shared source in entry</div>
-    <ul class="cluster-list">${clusterHTML}</ul>
-    <p class="source-caveat">${source === "demo" ? "Showing a curated preview while Wiktionary loads. " : ""}Glottolog points are representative locations, not complete speaker territories. Colours group the first explicit Wiktionary source template.</p>`;
-}
-
-function renderRegionStory(name, entries, level) {
-  ui.storyIndex.textContent = `01 / ${level.toUpperCase()}`;
-  ui.story.innerHTML = `
-    <p class="story-lede"><em>${escapeHTML(name)}</em> contains ${entries.length} mapped ${entries.length === 1 ? "entry" : "entries"} for “${escapeHTML(state.concept)}”.</p>
-    <div class="legend-title">Open in Wiktionary</div>
-    <div class="entry-links">${entryLinks(entries, 60)}</div>
-    <p class="source-caveat">Click a numbered subregion to continue inward. Locations come from Glottolog; administrative containment is computed from the representative point.</p>`;
-}
-
-function balancedEtymologySample(items, limit = 49) {
-  const groups = new Map();
-  for (const item of items) {
-    const area = LANGUAGES[item.code]?.macroarea || "Unspecified";
-    const group = groups.get(area) || [];
-    group.push(item);
-    groups.set(area, group);
-  }
-  const sample = [];
-  const queues = [...groups.values()];
-  while (sample.length < limit && queues.some((queue) => queue.length)) {
-    for (const queue of queues) {
-      if (queue.length && sample.length < limit) sample.push(queue.shift());
+async function renderAreas() {
+  const revision=state.areaRevision;
+  if(!state.map) return;
+  state.areas.clearLayers();
+  const eligible=state.mode==="compare" && $("#speaker-toggle").checked && period().to>=PRESENT && state.map.getZoom()>=3;
+  if(!eligible) { updateCaption(); return; }
+  const entries=visible(state.entries).filter(i=>{
+    const meta=LANGUAGES[i.code];
+    return meta?.glottocode && !meta.historical && meta.point && state.map.getBounds().pad(.2).contains(pointOnMap(meta.point));
+  });
+  const unique=[...new Map(entries.map(i=>[LANGUAGES[i.code].glottocode,i])).values()];
+  let cursor=0, count=0, failures=0;
+  await Promise.all(Array.from({length:Math.min(4,unique.length)},async()=>{
+    while(cursor<unique.length && revision===state.areaRevision) {
+      const item=unique[cursor++];
+      try {
+        const feature=await loadSpeakerArea(LANGUAGES[item.code].glottocode);
+        if(!feature || revision!==state.areaRevision) continue;
+        L.geoJSON(feature,{pane:"territories",interactive:false,style:{color:color(item),weight:1,fillColor:color(item),fillOpacity:.15}}).addTo(state.areas);
+        count++;
+      } catch { failures++; }
     }
-  }
-  return sample;
-}
-
-async function openCountry(feature, layer, entries) {
-  const iso3 = featureIso3(feature);
-  if (!iso3 || iso3.length !== 3) {
-    state.map.fitBounds(layer.getBounds(), { padding: [50, 50] });
-    showWordsInBounds(entries, featureName(feature));
-    return;
-  }
-  state.drill = { iso3, level: 1, trail: [featureName(feature)], entries };
-  ui.drilldown.classList.remove("hidden");
-  ui.place.textContent = `${featureName(feature)} / ADM1`;
-  state.map.fitBounds(layer.getBounds(), { padding: [35, 35], maxZoom: 5 });
-  renderRegionStory(featureName(feature), entries, "country");
-  await openAdministrativeLevel(iso3, 1, entries, featureName(feature));
-}
-
-async function openAdministrativeLevel(iso3, level, entries, parentName) {
-  const revision = ++state.drillRevision;
-  setStatus(`Loading ADM${level} boundaries…`, "loading");
-  try {
-    const geojson = await fetchAdministrativeBoundaries(iso3, level);
-    if (revision !== state.drillRevision || state.mode !== "compare") return;
-    assignEntriesToFeatures(geojson.features, entries);
-    const matched = geojson.features.filter((feature) => feature.properties?._etymonEntries?.length);
-    if (!matched.length) throw new Error("No entries fall inside this boundary layer");
-    if (state.adminLayer) state.map.removeLayer(state.adminLayer);
-    state.markers.clearLayers();
-    state.badges.clearLayers();
-    if (state.countryLayer && state.map.hasLayer(state.countryLayer)) state.map.removeLayer(state.countryLayer);
-    state.adminLayer = window.L.geoJSON({ type: "FeatureCollection", features: matched }, {
-      style: (feature) => ({ color: "rgba(241,239,230,.75)", weight: 1.2, fillColor: feature.properties._etymonEntries[0]._color, fillOpacity: .5 }),
-      onEachFeature(feature, regionLayer) {
-        const regionEntries = feature.properties._etymonEntries;
-        regionLayer.on("mouseover", () => regionLayer.setStyle({ fillOpacity: .75, weight: 2 }));
-        regionLayer.on("mouseout", () => state.adminLayer.resetStyle(regionLayer));
-        regionLayer.on("click", () => openSubregion(feature, regionLayer, regionEntries, iso3, level));
-      }
-    }).addTo(state.map);
-    state.adminLayer.eachLayer((regionLayer) => {
-      const feature = regionLayer.feature;
-      const regionEntries = feature.properties._etymonEntries;
-      addRegionBadge(feature, regionLayer, regionEntries, () => openSubregion(feature, regionLayer, regionEntries, iso3, level), `ADM${level}`);
-    });
-    state.drill = { iso3, level, trail: [...(state.drill?.trail || [parentName])], entries };
-    ui.place.textContent = `${state.drill.trail.join(" / ")} / ADM${level}`;
-    setStatus("Glottolog + Wiktionary", "live");
-    if (level === 1) renderSpeakerAreas(entries, revision);
-  } catch (error) {
-    if (revision !== state.drillRevision || state.mode !== "compare") return;
-    setStatus("Representative locations", "error");
-    showMessage(`${error.message}. Showing the individual language locations instead.`);
-    showWordsInBounds(entries, parentName);
+  }));
+  if(revision===state.areaRevision) {
+    updateCaption(count);
+    if(failures) message("Some speaker territories could not load. Language points remain available.");
   }
 }
+function updateCaption(areas=0) {
+  $("#map-caption-text").textContent=(areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
+}
 
-async function renderSpeakerAreas(entries, revision) {
-  const located = entries.filter((entry) => LANGUAGES[entry.code]?.glottocode);
-  if (!located.length) return;
-  setStatus("Loading speaker-area vectors…", "loading");
-  try {
-    const results = await Promise.all(located.map(async (entry) => ({
-      entry,
-      feature: await loadSpeakerArea(LANGUAGES[entry.code].glottocode)
-    })));
-    if (revision !== state.drillRevision || state.mode !== "compare") return;
-    const features = results.filter((result) => result.feature).map(({ entry, feature }) => ({
-      ...feature,
-      properties: { ...feature.properties, _color: entry._color, _term: entry.term, _language: languageName(entry.code) }
-    }));
-    if (!features.length) {
-      setStatus("Representative locations", "live");
-      return;
-    }
-    if (state.speakerLayer) state.map.removeLayer(state.speakerLayer);
-    state.speakerLayer = window.L.geoJSON({ type: "FeatureCollection", features }, {
-      interactive: false,
-      style: (feature) => ({
-        color: feature.properties._color,
-        weight: 1.4,
-        fillColor: feature.properties._color,
-        fillOpacity: .28,
-        dashArray: "5 4"
-      })
-    }).addTo(state.map);
-    state.badges.bringToFront?.();
-    ui.kicker.textContent = `${features.length} contemporary speaker ${features.length === 1 ? "area" : "areas"} · click a subregion to continue`;
-    setStatus("Glottography speaker areas", "live");
-  } catch (error) {
-    if (revision !== state.drillRevision) return;
-    setStatus("Representative locations", "error");
-    showMessage(`${error.message}. Administrative drill-down remains available.`);
+function startSearch() {
+  state.controller?.abort();
+  state.controller=new AbortController();
+  state.search++;
+  state.region=null; state.entryQuery="";
+  $("#map-drilldown").classList.add("hidden");
+  return {revision:state.search,signal:state.controller.signal};
+}
+function pending(items) { return items.map(i=>({...i,source:"unresolved",sourceName:"Etymology not loaded"})); }
+async function enrichAll(revision,signal) {
+  const queue=[...state.entries];
+  for(let offset=0;offset<queue.length;offset+=40) {
+    if(revision!==state.search || state.mode!=="compare") return;
+    status("Reading etymologies · "+Math.min(offset+40,queue.length)+" / "+queue.length,"loading");
+    const batch=await enrichTranslations(queue.slice(offset,offset+40),{signal});
+    if(revision!==state.search) return;
+    const updates=new Map(batch.map(i=>[key(i),i]));
+    state.entries=state.entries.map(i=>updates.get(key(i)) || i);
+    // Preserve the user's place in the list and open controls while data arrives.
+    renderEntryList(); renderGeography();
   }
+  if(revision===state.search) { renderStory(); scheduleAreas(); status("Wiktionary · "+new Set(state.entries.map(i=>i.code)).size+" languages"); }
 }
-
-function openSubregion(feature, layer, entries, iso3, level) {
-  const name = featureName(feature);
-  state.map.fitBounds(layer.getBounds(), { padding: [50, 50], maxZoom: Math.min(7, level + 4) });
-  renderRegionStory(name, entries, `ADM${level}`);
-  state.drill.trail = [...state.drill.trail.slice(0, level), name];
-  ui.place.textContent = state.drill.trail.join(" / ");
-  if (entries.length === 1 || level >= 3) showWordsInBounds(entries, name);
-  else openAdministrativeLevel(iso3, level + 1, entries, name);
-}
-
-function showWordsInBounds(entries, name) {
-  if (state.adminLayer) state.adminLayer.setStyle({ fillOpacity: .25 });
-  state.badges.clearLayers();
-  state.markers.clearLayers();
-  for (const item of entries) addWordMarker(item, true);
-  ui.place.textContent = `${state.drill?.trail?.join(" / ") || name} / entries`;
-  renderRegionStory(name, entries, "entries");
-}
-
 async function loadComparison(concept) {
-  const clean = concept.trim();
-  if (!clean) return;
-  const revision = ++state.searchRevision;
-  setStatus("Loading language geography…", "loading");
+  const clean=concept.trim();
+  if(!clean) return;
+  const {revision,signal}=startSearch();
+  state.entries=[]; state.concept=clean; state.senses=[];
+  $("#sense-field").classList.add("hidden");
+  renderComparison(); status("Reading Wiktionary…","loading");
   try {
-    const [, page] = await Promise.all([loadGlottolog(), fetchWikitext(clean)]);
-    if (revision !== state.searchRevision) return;
-    if (!page) throw new Error(`No Wiktionary entry for “${clean}”`);
-    const translations = parseTranslations(page.text)
-      .filter((item) => LANGUAGES[item.code]?.point)
-      .slice(0, 180);
-    if (!translations.length) throw new Error("No located translations were found in the English entry");
-    const pending = translations.map((item) => ({
-      ...item, source: "unresolved", sourceName: "Etymology not loaded", type: "unknown", edges: []
-    }));
-    renderComparison(pending, clean, "live");
-    setStatus("Reading etymologies…", "loading");
-    const ownEdges = parseEtymology(page.text, "en");
-    const ownCluster = chooseCluster(ownEdges, "en");
-    const enriched = await enrichTranslations(balancedEtymologySample(translations));
-    if (revision !== state.searchRevision) return;
-    const enrichedByCode = new Map(enriched.map((item) => [item.code, item]));
-    const located = translations.map((item) => enrichedByCode.get(item.code) || {
-      ...item, source: "unresolved", sourceName: "Etymology not loaded", type: "unknown", edges: []
-    });
-    renderComparison([{ code: "en", term: clean, language: "English", ...ownCluster, edges: ownEdges }, ...located], clean, "live");
-    setStatus("Glottolog + Wiktionary", "live");
-  } catch (error) {
-    if (revision !== state.searchRevision) return;
-    setStatus("Preview data", "error");
-    if (clean.toLowerCase() === "church") {
-      renderComparison(DEMO_CHURCH, "church", "demo");
-      showMessage(`${error.message}. Keeping the curated church preview.`);
-    } else showMessage(`${error.message}. Try an English lemma with a translation table.`);
+    const page=await fetchWikitext(clean,{signal});
+    if(!page) throw new Error('No Wiktionary entry for “'+clean+'”');
+    let senses=parseTranslationSenses(page.text);
+    if(!senses.length || /\{\{(?:see translation subpage|trans-see)/i.test(page.text)) {
+      const subpage=await fetchWikitext(clean+"/translations",{signal});
+      if(subpage) {
+        const more=parseTranslationSenses(subpage.text);
+        if(more.length) senses=[...senses,...more];
+      }
+    }
+    if(revision!==state.search) return;
+    if(!senses.length) throw new Error("No English translation table found. Use Word journey to search a word in another language.");
+    state.senses=senses;
+    const largest=senses.reduce((best,s,i)=>s.entries.length>senses[best].entries.length ? i:best,0);
+    $("#sense-select").innerHTML=senses.map((s,i)=>'<option value="'+i+'">'+esc(s.label)+' · '+s.entries.length+' forms</option>').join("");
+    $("#sense-select").value=String(largest);
+    $("#sense-field").classList.toggle("hidden",senses.length<2);
+    state.entries=pending(senses[largest].entries);
+    renderComparison(); fitItems(visible(state.entries),5);
+    await enrichAll(revision,signal);
+  } catch(error) {
+    if(revision!==state.search || error.name==="AbortError") return;
+    status(state.entries.length ? "Word results loaded · etymology incomplete":"Search unavailable","error");
+    message(error.message);
   }
 }
-
-function journeyTooltip(node, index) {
-  return makePopup({ code: node.code, term: node.term, sourceName: node.era }, CLUSTER_COLORS[index % CLUSTER_COLORS.length]);
+async function changeSense() {
+  const sense=state.senses[+$("#sense-select").value];
+  if(!sense) return;
+  const {revision,signal}=startSearch();
+  state.entries=pending(sense.entries);
+  renderComparison(); fitItems(visible(state.entries),5);
+  try { await enrichAll(revision,signal); }
+  catch(error) { if(revision===state.search && error.name!=="AbortError") { status("Etymology incomplete","error"); message(error.message); } }
 }
-
-function renderJourney(nodes, word, languageCode, source = "live") {
-  clearMap();
-  state.journeyNodes = nodes.filter((node) => node.point);
-  refreshBoundaries();
-  const bounds = [];
-  state.journeyNodes.forEach((node, index) => {
-    bounds.push(node.point);
-    const icon = window.L.divIcon({ className: "journey-node", html: String(index + 1), iconSize: [28, 28] });
-    const marker = window.L.marker(node.point, { icon, zIndexOffset: 500 - index }).addTo(state.markers);
-    marker.bindPopup(journeyTooltip(node, index));
-    marker.bindTooltip(makeWordLabel(node, CLUSTER_COLORS[index % CLUSTER_COLORS.length]), {
-      permanent: true, interactive: true, direction: index % 2 ? "left" : "right",
-      offset: [index % 2 ? -12 : 12, 0], className: "word-label", opacity: 1
-    });
+function renderJourney() {
+  if(!state.map) return;
+  state.markers.clearLayers(); state.areas.clearLayers();
+  const nodes=visible(state.nodes);
+  nodes.forEach(node=>{
+    if(!node.point) return;
+    const index=state.nodes.indexOf(node);
+    const marker=L.marker(pointOnMap(node.point),{icon:L.divIcon({className:"journey-node",html:String(index+1),iconSize:[28,28],iconAnchor:[14,14]})}).addTo(state.markers);
+    marker.bindPopup(popup(node));
+    marker.bindTooltip(wordLabel(node),{permanent:true,interactive:true,direction:index%2 ? "left":"right",offset:[index%2 ? -15:15,0],className:"word-label",opacity:1});
   });
-  if (bounds.length > 1) state.map.fitBounds(bounds, { padding: [80, 90], maxZoom: 4, animate: false });
-  else if (bounds[0]) state.map.setView(bounds[0], 4, { animate: false });
-  window.setTimeout(drawJourneyLines, 0);
-  ui.kicker.textContent = `${languageName(languageCode)} · ${nodes.length} attested stages`;
-  ui.title.textContent = `The journey of “${word}”`;
-  renderJourneyStory(nodes, source);
+  $("#map-kicker").textContent=state.nodes.length ? languageName(state.nodes[0].code)+" · EXPLICIT SOURCE REFERENCES":"WORD JOURNEY";
+  $("#map-title").textContent=state.nodes.length ? 'The sources of “'+state.nodes[0].term+'”':"Trace a word";
+  $("#story-content").innerHTML='<ol class="journey-list">'+nodes.map(node=>'<li><span class="number">'+(state.nodes.indexOf(node)+1)+'</span><a href="'+esc(wiktionaryUrl(node.term,node.code))+'" target="_blank" rel="noreferrer">'+esc(node.term)+'</a><small>'+esc(languageName(node.code))+' · '+esc(periodLabel(node.code))+(node.point ? "":" · location unavailable")+'</small><span class="relation">'+esc(node.type==="current" ? "selected entry":(node.uncertain ? "possibly ":"")+(TYPE_LABELS[node.type] || "derived from"))+'</span><div class="entry-meta">'+resourceLinks(node.code)+'</div></li>').join("")+'</ol>'+
+    (!nodes.length ? '<p class="empty-state">No stages in this period. Widen the time range to see the entry.</p>':'')+
+    '<p class="source-caveat">'+(state.nodes.length===1 ? "This entry has no supported explicit source templates; its word and language links are still available. ":"")+"Arrows point from each source mentioned in the selected entry to that entry. They do not assume a chronological chain between those sources. Reconstructed forms are marked with *. Dates describe languages, not individual words.</p>";
+  drawJourneyLines(); updateCaption();
 }
-
 function drawJourneyLines() {
-  if (state.mode !== "journey" || !state.map || state.journeyNodes.length < 2) {
-    ui.lines.innerHTML = "";
-    return;
+  const svg=$("#journey-lines");
+  if(state.mode!=="journey" || !state.map) { svg.innerHTML=""; return; }
+  const nodes=visible(state.nodes);
+  const root=state.nodes[0];
+  if(!root?.point || !nodes.includes(root)) { svg.innerHTML=""; return; }
+  const size=state.map.getSize();
+  svg.setAttribute("viewBox","0 0 "+size.x+" "+size.y);
+  const to=state.map.latLngToContainerPoint(pointOnMap(root.point));
+  const parts=['<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path class="journey-arrow" d="M0,0 L0,6 L8,3 z"/></marker></defs>'];
+  for(const node of nodes) {
+    if(node===root || !node.point) continue;
+    const from=state.map.latLngToContainerPoint(pointOnMap(node.point));
+    const bend=Math.max(40,Math.abs(to.x-from.x)*.2);
+    parts.push('<path class="journey-line" d="M '+from.x+' '+from.y+' Q '+((from.x+to.x)/2)+' '+(Math.min(from.y,to.y)-bend)+' '+to.x+' '+to.y+'" marker-end="url(#arrow)"/>');
   }
-  const size = state.map.getSize();
-  ui.lines.setAttribute("viewBox", `0 0 ${size.x} ${size.y}`);
-  const parts = ['<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path class="journey-arrow" d="M0,0 L0,6 L8,3 z" /></marker></defs>'];
-  for (let index = 0; index < state.journeyNodes.length - 1; index += 1) {
-    const from = state.map.latLngToContainerPoint(state.journeyNodes[index].point);
-    const to = state.map.latLngToContainerPoint(state.journeyNodes[index + 1].point);
-    const bend = Math.max(28, Math.abs(to.x - from.x) * .25);
-    parts.push(`<path class="journey-line" d="M ${from.x} ${from.y} Q ${(from.x + to.x) / 2} ${Math.min(from.y, to.y) - bend} ${to.x} ${to.y}" marker-end="url(#arrow)" />`);
-  }
-  ui.lines.innerHTML = parts.join("");
+  svg.innerHTML=parts.join("");
 }
-
-function renderJourneyStory(nodes, source) {
-  ui.storyIndex.textContent = "02 / LINEAGE";
-  const items = nodes.map((node, index) => `<li>
-    <span class="number">${index + 1}</span>
-    <a href="${wiktionaryUrl(node.term, node.code)}" target="_blank" rel="noreferrer">${escapeHTML(node.term)}</a>
-    <span class="language">${escapeHTML(languageName(node.code))} · ${escapeHTML(node.era || "Earlier form")}</span>
-    <span class="relation">${escapeHTML(index === 0 ? "the word today" : (TYPE_LABELS[node.type] || "derived from"))}</span>
-  </li>`).join("");
-  ui.story.innerHTML = `<p class="story-lede">Follow the forms from the present word toward its <em>earlier recorded sources.</em></p>
-    <ol class="journey-list">${items}</ol>
-    <p class="source-caveat">${source === "demo" ? "This is a curated fallback lineage. " : "Relationships are parsed from explicit Wiktionary templates. "}Dates and points are approximate historical context.</p>`;
-}
-
-async function loadJourney(word, languageCode) {
-  const clean = word.trim();
-  if (!clean) return;
-  setStatus("Reading Wiktionary…", "loading");
+async function loadJourney(word,code) {
+  const clean=word.trim();
+  if(!clean) return;
+  if(!code) { message("Choose a language from the suggestions, or enter its Wiktionary code."); return; }
+  const {revision,signal}=startSearch();
+  state.nodes=[]; renderJourney(); status("Reading Wiktionary…","loading");
   try {
-    const page = await fetchWikitext(clean);
-    if (!page) throw new Error(`No Wiktionary entry for “${clean}”`);
-    const nodes = buildJourney(clean, languageCode, page.text);
-    if (nodes.length < 2) throw new Error(`No explicit etymology chain found for ${languageName(languageCode)} “${clean}”`);
-    renderJourney(nodes, clean, languageCode, "live");
-    setStatus("Live Wiktionary data", "live");
-  } catch (error) {
-    setStatus("Preview data", "error");
-    if (clean.toLocaleLowerCase() === "cerkiew" && languageCode === "pl") {
-      renderJourney(DEMO_CERKIEW, "cerkiew", "pl", "demo");
-      showMessage(`${error.message}. Keeping the curated cerkiew preview.`);
-    } else showMessage(`${error.message}. Try another lemma/language pair.`);
+    const title=clean.startsWith("*") ? "Reconstruction:"+languageName(code)+"/"+clean.slice(1):clean;
+    const page=await fetchWikitext(title,{signal});
+    if(revision!==state.search) return;
+    if(!page) throw new Error("No Wiktionary entry found for this word.");
+    if(!getLanguageSection(page.text,LANGUAGES[code]?.wiktionaryName || languageName(code))) throw new Error("This page has no "+languageName(code)+" section.");
+    state.nodes=buildJourney(clean,code,page.text);
+    renderJourney(); fitItems(visible(state.nodes),6);
+    status("Live Wiktionary entry");
+  } catch(error) {
+    if(revision!==state.search || error.name==="AbortError") return;
+    status("Entry unavailable","error"); message(error.message);
   }
 }
-
 function switchMode(mode) {
-  state.mode = mode;
-  ui.tabs.forEach((tab) => {
-    const active = tab.dataset.mode === mode;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", String(active));
+  if(state.mode===mode) return;
+  startSearch();
+  state.mode=mode;
+  document.querySelectorAll(".mode-tab").forEach(button=>{
+    button.classList.toggle("active",button.dataset.mode===mode);
+    button.setAttribute("aria-pressed",String(button.dataset.mode===mode));
   });
-  ui.compareForm.classList.toggle("hidden", mode !== "compare");
-  ui.journeyForm.classList.toggle("hidden", mode !== "journey");
-  if (mode === "compare") renderComparison(state.lastComparison, state.concept, state.source);
-  else {
-    renderJourney(DEMO_CERKIEW, "cerkiew", "pl", "demo");
-    loadJourney(ui.word.value, ui.language.value);
-  }
-  window.setTimeout(() => state.map?.invalidateSize(), 0);
+  $("#compare-form").classList.toggle("hidden",mode!=="compare");
+  $("#journey-form").classList.toggle("hidden",mode!=="journey");
+  scheduleAreas();
+  if(mode==="compare") loadComparison($("#concept-input").value);
+  else loadJourney($("#word-input").value,resolveLanguage($("#language-input").value));
+}
+function updatePeriod(changed) {
+  let from=+$("#time-from").value, to=+$("#time-to").value;
+  if(from>to) { if(changed==="from") $("#time-to").value=String(from); else $("#time-from").value=String(to); }
+  from=+$("#time-from").value; to=+$("#time-to").value;
+  $("#from-label").textContent=formatYear(from); $("#to-label").textContent=formatYear(to);
+  const label=from===EARLIEST && to===PRESENT ? "All periods":formatYear(from)+" – "+formatYear(to);
+  $("#time-label").textContent=label; $("#options-summary").textContent=label;
+  state.region=null; $("#map-drilldown").classList.add("hidden");
+  if(state.mode==="compare") renderComparison(); else renderJourney();
+  scheduleAreas(); updateCaption();
 }
 
 function bindEvents() {
-  ui.tabs.forEach((tab) => tab.addEventListener("click", () => switchMode(tab.dataset.mode)));
-  ui.compareForm.addEventListener("submit", (event) => { event.preventDefault(); loadComparison(ui.concept.value); });
-  ui.journeyForm.addEventListener("submit", (event) => { event.preventDefault(); loadJourney(ui.word.value, ui.language.value); });
-  document.querySelectorAll("[data-example]").forEach((button) => button.addEventListener("click", () => {
-    ui.concept.value = button.dataset.example;
-    loadComparison(button.dataset.example);
-  }));
-  document.querySelectorAll("[data-word]").forEach((button) => button.addEventListener("click", () => {
-    ui.word.value = button.dataset.word;
-    ui.language.value = button.dataset.language;
-    loadJourney(button.dataset.word, button.dataset.language);
-  }));
-  ui.collapse.addEventListener("click", () => {
-    const collapsed = ui.storyPanel.classList.toggle("collapsed");
-    ui.collapse.textContent = collapsed ? "+" : "−";
+  document.querySelectorAll(".mode-tab").forEach(b=>b.addEventListener("click",()=>switchMode(b.dataset.mode)));
+  $("#compare-form").addEventListener("submit",e=>{e.preventDefault();loadComparison($("#concept-input").value);});
+  $("#journey-form").addEventListener("submit",e=>{e.preventDefault();loadJourney($("#word-input").value,resolveLanguage($("#language-input").value));});
+  document.querySelectorAll("[data-example]").forEach(b=>b.addEventListener("click",()=>{$("#concept-input").value=b.dataset.example;loadComparison(b.dataset.example);}));
+  document.querySelectorAll("[data-word]").forEach(b=>b.addEventListener("click",()=>{$("#word-input").value=b.dataset.word;$("#language-input").value=languageName(b.dataset.language);loadJourney(b.dataset.word,b.dataset.language);}));
+  $("#sense-select").addEventListener("change",changeSense);
+  $("#collapse-card").addEventListener("click",()=>{
+    const collapsed=$(".info-card").classList.toggle("collapsed");
+    $("#collapse-card").textContent=collapsed ? "+":"−";
+    $("#collapse-card").setAttribute("aria-expanded",String(!collapsed));
+    $("#collapse-card").setAttribute("aria-label",collapsed ? "Expand information card":"Collapse information card");
   });
-  ui.back.addEventListener("click", () => resetDrill(true));
+  $("#map-home").addEventListener("click",allResults); $("#map-back").addEventListener("click",allResults);
+  $("#labels-toggle").addEventListener("change",applyBasemapOptions); $("#borders-toggle").addEventListener("change",applyBasemapOptions);
+  $("#speaker-toggle").addEventListener("change",scheduleAreas);
+  $("#time-from").addEventListener("input",()=>updatePeriod("from")); $("#time-to").addEventListener("input",()=>updatePeriod("to"));
+  $("#undated-toggle").addEventListener("change",()=>updatePeriod());
+  $("#reset-time").addEventListener("click",()=>{$("#time-from").value=String(EARLIEST);$("#time-to").value=String(PRESENT);updatePeriod();});
+  $("#story-content").addEventListener("input",event=>{if(event.target.id==="entry-filter"){state.entryQuery=event.target.value;renderEntryList();}});
+  $("#story-content").addEventListener("click",event=>{
+    if(event.target.closest("#more-entries")) { state.entryLimit+=60; renderEntryList(); return; }
+    const button=event.target.closest("[data-entry]");
+    if(!button) return;
+    const item=state.entries.find(i=>key(i)===button.dataset.entry);
+    if(!item) return;
+    fitItems([item],7);
+    addWord(item)?.openPopup();
+  });
 }
-
-initLanguageSelect();
-initMap();
-bindEvents();
-if (state.map) {
-  renderComparison(DEMO_CHURCH, "church", "demo");
-  loadComparison("church");
+async function start() {
+  for(const id of ["time-from","time-to"]) $("#"+id).max=String(PRESENT);
+  $("#time-to").value=String(PRESENT);
+  bindEvents();
+  const mapReady=initMap();
+  try {
+    const count=await loadLanguageCatalog();
+    $("#language-list").innerHTML=Object.entries(LANGUAGES).filter(([code])=>!code.includes("_")).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([code,m])=>'<option value="'+esc(m.name)+'">'+esc(code+(m.historical ? " · historical":""))+'</option>').join("");
+    $("#language-input").placeholder="Search "+count.toLocaleString()+" languages…";
+  } catch { message("The full language catalogue could not load. Core languages are available; reload to retry."); }
+  await mapReady;
+  updatePeriod();
+  if(state.search===0) loadComparison("water");
 }
+start();

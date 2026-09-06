@@ -1,113 +1,78 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Explore how words travel across languages and geography using Wiktionary etymology data." />
-    <title>Etymon — words have travelled</title>
-    <link rel="preconnect" href="https://unpkg.com" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <header class="site-header">
-      <a class="brand" href="#" aria-label="Etymon home">
-        <span class="brand-mark" aria-hidden="true">e</span>
-        <span>ETYMON</span>
-      </a>
-      <p class="header-note">Words have travelled.<br />See where they went.</p>
-      <a class="source-link" href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Data from Wiktionary ↗</a>
-    </header>
-
-    <main>
-      <section class="hero">
-        <div class="eyebrow"><span></span> Etymology, made visible</div>
-        <h1>Every word<br />has a <em>where.</em></h1>
-        <p>Trace a meaning across languages, or follow one word backward through centuries of contact, inheritance, and change.</p>
-      </section>
-
-      <section class="workspace" aria-label="Etymology map explorer">
-        <div class="mode-tabs" role="tablist" aria-label="Map mode">
-          <button id="compare-tab" class="mode-tab active" role="tab" aria-selected="true" data-mode="compare">
-            <span>01</span> Across languages
-          </button>
-          <button id="journey-tab" class="mode-tab" role="tab" aria-selected="false" data-mode="journey">
-            <span>02</span> One word's journey
-          </button>
-        </div>
-
-        <div class="search-panel">
-          <form id="compare-form" class="search-form">
-            <label for="concept-input">Map a meaning</label>
-            <div class="search-row">
-              <input id="concept-input" name="concept" value="church" autocomplete="off" spellcheck="false" />
-              <button type="submit" aria-label="Map this meaning">Map it <span>↗</span></button>
-            </div>
-            <div class="examples" aria-label="Example searches">
-              <span>Try</span>
-              <button type="button" data-example="church">church</button>
-              <button type="button" data-example="pineapple">pineapple</button>
-              <button type="button" data-example="tea">tea</button>
-            </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#eef1ea" />
+  <meta name="description" content="An atlas of words. Explore Wiktionary across living and historical languages, with language territories and WALS profiles." />
+  <title>Etymon — an atlas of words</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="atlas" aria-label="Etymology map explorer">
+    <div id="map" aria-label="Interactive language map"></div>
+    <svg id="journey-lines" class="journey-lines" aria-hidden="true"></svg>
+    <a class="skip-link" href="#concept-input">Skip to word search</a>
+    <aside class="info-card" aria-label="Word search and map information">
+      <header class="card-header">
+        <a class="brand" href="./" aria-label="Etymon home"><span class="brand-mark" aria-hidden="true">e</span><span>Etymon<small>AN ATLAS OF WORDS</small></span></a>
+        <button id="collapse-card" class="icon-button" type="button" aria-label="Collapse information card" aria-expanded="true" aria-controls="card-body">−</button>
+      </header>
+      <div id="card-body">
+        <nav class="mode-tabs" aria-label="Map mode">
+          <button class="mode-tab active" aria-pressed="true" data-mode="compare">Across languages</button>
+          <button class="mode-tab" aria-pressed="false" data-mode="journey">Word journey</button>
+        </nav>
+        <section class="search-panel" aria-label="Search Wiktionary">
+          <form id="compare-form">
+            <label for="concept-input">Explore a meaning</label>
+            <div class="search-row"><input id="concept-input" value="water" placeholder="An English word…" autocomplete="off" spellcheck="false" required /><button type="submit" aria-label="Search meaning">↗</button></div>
+            <div class="examples"><span>Try</span><button type="button" data-example="water">water</button><button type="button" data-example="church">church</button><button type="button" data-example="star">star</button></div>
+            <div id="sense-field" class="sense-field hidden"><label for="sense-select">Meaning</label><select id="sense-select"></select></div>
           </form>
-
-          <form id="journey-form" class="search-form hidden">
-            <label for="word-input">Trace a word</label>
-            <div class="journey-fields">
-              <input id="word-input" name="word" value="cerkiew" autocomplete="off" spellcheck="false" aria-label="Word" />
-              <select id="language-select" name="language" aria-label="Language"></select>
-              <button type="submit" aria-label="Trace this word">Trace it <span>↗</span></button>
-            </div>
-            <div class="examples" aria-label="Example journeys">
-              <span>Try</span>
-              <button type="button" data-word="cerkiew" data-language="pl">Polish cerkiew</button>
-              <button type="button" data-word="chocolate" data-language="en">English chocolate</button>
-              <button type="button" data-word="algebra" data-language="en">English algebra</button>
-            </div>
+          <form id="journey-form" class="hidden">
+            <label for="word-input">Trace a word, in any script</label>
+            <div class="search-row"><input id="word-input" value="cerkiew" autocomplete="off" spellcheck="false" required /><button type="submit" aria-label="Trace word">↗</button></div>
+            <label for="language-input" class="field-label">Language name or Wiktionary code</label>
+            <input id="language-input" list="language-list" value="Polish" autocomplete="off" placeholder="e.g. Sumerian, Akkadian, pl" required />
+            <datalist id="language-list"></datalist>
+            <div class="examples"><span>Try</span><button type="button" data-word="𒀀" data-language="sux">Sumerian 𒀀</button><button type="button" data-word="𒀀𒇉" data-language="akk">Akkadian 𒀀𒇉</button></div>
           </form>
-        </div>
-
-        <div class="map-shell">
-          <div class="map-heading">
-            <div>
-              <p id="map-kicker">A meaning, many histories</p>
-              <h2 id="map-title">How the world says “church”</h2>
-            </div>
-            <div id="live-status" class="live-status" aria-live="polite"><i></i> Live Wiktionary data</div>
+        </section>
+        <details class="map-options">
+          <summary>Map &amp; time <span id="options-summary">All periods</span></summary>
+          <div class="options-body">
+            <label class="toggle-row"><span>Speaker territories<small>Contemporary areas where available</small></span><input id="speaker-toggle" type="checkbox" checked /></label>
+            <label class="toggle-row"><span>Political outlines<small>Optional geographic reference</small></span><input id="borders-toggle" type="checkbox" /></label>
+            <label class="toggle-row"><span>Regional place labels</span><input id="labels-toggle" type="checkbox" checked /></label>
+            <fieldset class="time-filter"><legend>Language period</legend>
+              <div class="time-heading"><output id="time-label">All periods</output><button id="reset-time" type="button">Reset</button></div>
+              <label for="time-from">From <output id="from-label">3500 BCE</output></label><input id="time-from" type="range" min="-3500" max="2026" value="-3500" step="1" />
+              <label for="time-to">To <output id="to-label">Present</output></label><input id="time-to" type="range" min="-3500" max="2026" value="2026" step="1" />
+              <label class="toggle-row"><span>Include undated languages</span><input id="undated-toggle" type="checkbox" /></label>
+              <p class="fine-print">Approximate language periods, not dates of individual words. Present-day locations and speaker areas do not reconstruct historical borders.</p>
+            </fieldset>
           </div>
-          <div class="map-stage">
-            <div id="map" aria-label="Interactive etymology map"></div>
-            <svg id="journey-lines" class="journey-lines" aria-hidden="true"></svg>
-            <div id="map-message" class="map-message hidden"></div>
-            <div id="map-drilldown" class="map-drilldown hidden">
-              <button id="map-back" type="button">← World</button>
-              <span id="map-place"></span>
-            </div>
-            <div class="map-attribution">Locations: Glottolog · Boundaries: Natural Earth / geoBoundaries · Speaker areas may differ</div>
-          </div>
-        </div>
-
-        <aside class="story-panel" aria-live="polite">
-          <div class="story-header">
-            <span id="story-index">01 / OVERVIEW</span>
-            <button id="collapse-story" type="button" aria-label="Collapse details">−</button>
-          </div>
+        </details>
+        <section class="results" aria-label="Word results">
+          <div class="result-heading"><p id="map-kicker">LANGUAGES, WITHOUT BORDERS</p><h1 id="map-title">A world of words.</h1><div id="live-status" class="live-status" role="status"><i></i>Loading the atlas…</div></div>
           <div id="story-content"></div>
-        </aside>
-      </section>
-
-      <section class="method-note">
-        <span>How to read the map</span>
-        <p>Numbered regions count located word entries and can be opened down to smaller administrative units. At close range, click any word label to open its Wiktionary entry. Glottolog points locate languages without claiming that an administrative boundary is their speaker territory.</p>
-      </section>
-    </main>
-
-    <footer>
-      <span>ETYMON / A Wiktionary experiment</span>
-      <span>Words are evidence of contact.</span>
-    </footer>
-
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script type="module" src="./src/app.js"></script>
-  </body>
+        </section>
+        <details class="about"><summary>About the atlas &amp; sources</summary><p>Tap a count to explore nearby languages. Word links open Wiktionary; the locate button finds a word on the map. Colours group explicit etymological sources, not language families.</p><p>WALS adds language profiles and typological context; it does not supply word etymologies or territory boundaries. Missing coordinates never remove a word from the results.</p><p><a href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Wiktionary ↗</a> · <a href="https://glottolog.org" target="_blank" rel="noreferrer">Glottolog ↗</a> · <a href="https://wals.info" target="_blank" rel="noreferrer">WALS ↗</a></p><p>Speaker areas: <a href="https://doi.org/10.5281/zenodo.15287258" target="_blank" rel="noreferrer">Glottography / Asher &amp; Moseley (2007)</a>, CC BY 4.0. <a href="./data/LANGUAGE_SOURCES.md" target="_blank">Language data &amp; date sources ↗</a></p></details>
+      </div>
+    </aside>
+    <div class="map-tools"><button id="map-home" class="icon-button" type="button" aria-label="Show all results" title="Show all results"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg></button></div>
+    <div id="map-drilldown" class="map-drilldown hidden"><button id="map-back" type="button">← All results</button><span id="map-place"></span></div>
+    <div id="map-message" class="map-message hidden" role="status"></div>
+    <div class="map-caption"><span class="caption-dot"></span><span id="map-caption-text">Language locations · all periods</span></div>
+    <div class="map-attribution"><a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://www.naturalearthdata.com" target="_blank" rel="noreferrer">Natural Earth</a></div>
+  </main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.0/leaflet-maplibre-gl.js"></script>
+  <script type="module" src="./src/app.js"></script>
+</body>
 </html>

@@ -14,8 +14,16 @@ function cleanTerm(value = "") {
     .trim();
 }
 
-export async function fetchWikitexts(titles) {
-  const unique = [...new Set(titles.map((title) => title.trim()).filter(Boolean))].slice(0, 50);
+export async function fetchWikitexts(titles, { signal } = {}) {
+  const unique = [...new Set(titles.map((title) => title.trim()).filter(Boolean))];
+  if (unique.length > 50) {
+    const pages = new Map();
+    for (let index = 0; index < unique.length; index += 50) {
+      for (const [title, page] of await fetchWikitexts(unique.slice(index, index + 50), {signal})) pages.set(title, page);
+    }
+    return pages;
+  }
+  if (!unique.length) return new Map();
   const params = new URLSearchParams({
     action: "query",
     prop: "revisions",
@@ -27,9 +35,10 @@ export async function fetchWikitexts(titles) {
     formatversion: "2",
     origin: "*"
   });
-  const response = await fetch(`${API}?${params}`);
+  const response = await fetch(`${API}?${params}`, { signal });
   if (!response.ok) throw new Error(`Wiktionary returned ${response.status}`);
   const data = await response.json();
+  if (data.error) throw new Error(data.error.info || "Wiktionary API error");
   const result = new Map();
   for (const page of data.query?.pages || []) {
     if (page.missing) continue;
@@ -45,8 +54,8 @@ export async function fetchWikitexts(titles) {
   return result;
 }
 
-export async function fetchWikitext(title) {
-  const pages = await fetchWikitexts([title]);
+export async function fetchWikitext(title, options) {
+  const pages = await fetchWikitexts([title], options);
   return pages.get(title) || [...pages.values()][0] || null;
 }
 
@@ -82,12 +91,17 @@ function splitTemplate(raw) {
 }
 
 export function parseTranslations(wikitext) {
+  return parseTranslationSenses(wikitext).sort((a, b) => b.entries.length - a.entries.length)[0]?.entries || [];
+}
+
+export function parseTranslationSenses(wikitext) {
   const english = getLanguageSection(wikitext, "English");
-  const blocks = [...english.matchAll(/\{\{trans-top(?:\|[^{}]*)?\}\}([\s\S]*?)\{\{trans-bottom\}\}/g)]
-    .map((match) => match[1]);
-  const candidates = blocks.length ? blocks : [english];
-  const parsed = candidates.map(parseTranslationBlock).sort((a, b) => b.length - a.length);
-  return parsed[0] || [];
+  const blocks = [...english.matchAll(/\{\{trans-top(?:-also)?(?:\|([^{}]*))?\}\}([\s\S]*?)\{\{trans-bottom\}\}/g)];
+  const senses = blocks.map((match, index) => ({
+    label: cleanTerm(splitTemplate("trans-top|" + (match[1] || "")).positional[0]) || `Meaning ${index + 1}`,
+    entries: parseTranslationBlock(match[2])
+  }));
+  return (senses.length ? senses : [{label:"Translations", entries:parseTranslationBlock(english)}]).filter((sense) => sense.entries.length);
 }
 
 function parseTranslationBlock(block) {
@@ -98,12 +112,14 @@ function parseTranslationBlock(block) {
     const template = splitTemplate(match[1]);
     if (!["t", "t+", "tt", "tt+", "t-check", "t-simple"].includes(template.name)) continue;
     const [code, rawTerm] = template.positional;
-    const term = cleanTerm(template.named.alt || rawTerm);
-    if (!code || !/^[a-z][a-z0-9-]{1,11}$/.test(code) || !term || seen.has(code)) continue;
+    const term = cleanTerm(rawTerm);
+    const key = `${code}:${term}`;
+    if (!code || !/^[a-z][a-z0-9-]+$/.test(code) || !term || term === "-" || seen.has(key)) continue;
     const label = translationLanguageLabel(block, match.index);
-    if (label && LANGUAGES[code]) LANGUAGES[code].wiktionaryName ||= label;
-    seen.add(code);
-    translations.push({ code, term, language: label || languageName(code) });
+    if (!LANGUAGES[code]) LANGUAGES[code] = { name: label || code };
+    if (label) LANGUAGES[code].wiktionaryName ||= label;
+    seen.add(key);
+    translations.push({ code, term, display:cleanTerm(template.named.alt || term), transliteration:template.named.tr || "", language: label || languageName(code) });
   }
   return translations;
 }
@@ -124,17 +140,40 @@ function translationLanguageLabel(block, index) {
 export function parseEtymology(wikitext, languageCode) {
   const meta = LANGUAGES[languageCode];
   if (!meta) return [];
-  const section = getEtymologySection(getLanguageSection(wikitext, meta.name));
+  const section = getEtymologySection(getLanguageSection(wikitext, meta.wiktionaryName || meta.name));
   if (!section) return [];
   const edges = [];
   const seen = new Set();
   const regex = /\{\{([^{}]+)\}\}/g;
   for (const match of section.matchAll(regex)) {
     const template = splitTemplate(match[1]);
+    if (["etymon", "ety"].includes(template.name) && template.positional[0] === languageCode) {
+      let type = "der";
+      let uncertain = false;
+      for (const parameter of template.positional.slice(1)) {
+        if (parameter.startsWith(":")) {
+          type = parameter.slice(1).split("<")[0];
+          uncertain = parameter.includes("<unc>");
+          continue;
+        }
+        // Only explicit immediate references; nested inline chains are not flattened.
+        if (!ETYMOLOGY_TEMPLATES.has(type) && type !== "from") continue;
+        const reference = /^([a-z][a-z0-9-]+):([^<]+)/.exec(parameter);
+        if (!reference) continue;
+        const [, source, rawTerm] = reference;
+        const term = cleanTerm(rawTerm);
+        if (!term || term === "-") continue;
+        const edgeKey = `${source}:${term}:${type}`;
+        if (seen.has(edgeKey)) continue;
+        seen.add(edgeKey);
+        edges.push({ type, target:languageCode, source, term, sourceName:languageName(source), uncertain:uncertain || parameter.includes("<unc>") });
+      }
+      continue;
+    }
     if (!ETYMOLOGY_TEMPLATES.has(template.name)) continue;
     const [target, source, rawTerm] = template.positional;
     if (!source || target !== languageCode) continue;
-    const term = cleanTerm(template.named.alt || rawTerm || "");
+    const term = cleanTerm(rawTerm || "");
     const key = `${source}:${term}:${template.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -148,8 +187,8 @@ export function chooseCluster(edges, languageCode) {
   return first ? { source: first.source, sourceName: first.sourceName, type: first.type } : { source: languageCode, sourceName: "No explicit source", type: "unknown" };
 }
 
-export async function enrichTranslations(translations) {
-  const pages = await fetchWikitexts(translations.map((item) => item.term));
+export async function enrichTranslations(translations, options) {
+  const pages = await fetchWikitexts(translations.map((item) => item.term), options);
   const byLowerTitle = new Map([...pages.entries()].map(([title, value]) => [title.toLocaleLowerCase(), value]));
   return translations.map((item) => {
     const page = pages.get(item.term) || byLowerTitle.get(item.term.toLocaleLowerCase());
@@ -160,7 +199,7 @@ export async function enrichTranslations(translations) {
 
 export function buildJourney(word, languageCode, wikitext) {
   const edges = parseEtymology(wikitext, languageCode);
-  const nodes = [{ code: languageCode, term: word, type: "current", era: "Modern", point: LANGUAGES[languageCode]?.point }];
+  const nodes = [{ code: languageCode, term: word, type: "current", era: LANGUAGES[languageCode]?.era || (LANGUAGES[languageCode]?.historical ? "Historical language" : "Selected entry"), point: LANGUAGES[languageCode]?.point }];
   let lastCode = languageCode;
   for (const edge of edges) {
     if (!edge.term || edge.source === lastCode) continue;
@@ -168,6 +207,7 @@ export function buildJourney(word, languageCode, wikitext) {
       code: edge.source,
       term: edge.term,
       type: edge.type,
+      uncertain: edge.uncertain || false,
       era: LANGUAGES[edge.source]?.era || "Earlier form",
       point: LANGUAGES[edge.source]?.point
     });

@@ -38,7 +38,7 @@ export function registerGlottologCSV(csv, registry = LANGUAGES) {
     const code = row[column.ISO639P3code];
     const latitude = Number(row[column.Latitude]);
     const longitude = Number(row[column.Longitude]);
-    if (!code || row[column.Level] !== "language" || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
+    if (!code || row[column.Level] !== "language" || !row[column.Latitude]?.trim() || !row[column.Longitude]?.trim() || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
     const existing = registry[code] || {};
     registry[code] = {
       ...existing,
