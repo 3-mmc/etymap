@@ -31,18 +31,15 @@
         </div>
       </header>
       <div id="card-body">
-        <nav class="mode-tabs" aria-label="Map mode">
-          <button class="mode-tab active" aria-pressed="true" data-mode="compare">Across languages</button>
-          <button class="mode-tab" aria-pressed="false" data-mode="journey">Word journey</button>
-        </nav>
         <section class="search-panel" aria-label="Search Wiktionary">
           <form id="compare-form">
-            <label for="concept-input">Explore a meaning</label>
+            <label for="concept-input">Explore across languages</label>
             <div class="search-row"><input id="concept-input" value="water" placeholder="An English word…" autocomplete="off" spellcheck="false" required /><button type="submit" aria-label="Search meaning">↗</button></div>
-            <div class="examples"><span>Try</span><button type="button" data-example="water">water</button><button type="button" data-example="church">church</button><button type="button" data-example="star">star</button></div>
+            <div id="suggested-words" aria-label="Suggested words with broad language coverage"></div>
             <div id="sense-field" class="sense-field hidden"><label for="sense-select">Meaning</label><select id="sense-select"></select></div>
           </form>
-          <form id="journey-form" class="hidden">
+          <details class="direct-search"><summary>Look up a word in any language</summary>
+          <form id="journey-form">
             <label for="word-input">Trace a word, in any script</label>
             <div class="search-row"><input id="word-input" value="cerkiew" autocomplete="off" spellcheck="false" required /><button type="submit" aria-label="Trace word">↗</button></div>
             <label for="language-input" class="field-label">Language name or Wiktionary code</label>
@@ -50,6 +47,7 @@
             <datalist id="language-list"></datalist>
             <div class="examples"><span>Try</span><button type="button" data-word="𒀀" data-language="sux">Sumerian 𒀀</button><button type="button" data-word="𒀀𒇉" data-language="akk">Akkadian 𒀀𒇉</button></div>
           </form>
+          </details>
         </section>
         <details class="map-options">
           <summary>Map &amp; time <span id="options-summary">All periods</span></summary>
@@ -66,11 +64,12 @@
             </fieldset>
           </div>
         </details>
-        <section class="results" aria-label="Word results">
+        <section id="word-detail" class="word-detail hidden" aria-label="Selected word etymology"></section>
+        <section class="results" aria-label="Across languages results">
           <div class="result-heading"><p id="map-kicker">LANGUAGES, WITHOUT BORDERS</p><h1 id="map-title">A world of words.</h1><div id="live-status" class="live-status" role="status"><i></i>Loading the atlas…</div></div>
           <div id="story-content"></div>
         </section>
-        <details class="about"><summary>About the atlas &amp; sources</summary><p>Tap a count to explore nearby languages. Word links open Wiktionary; the locate button finds a word on the map. Colours group explicit etymological sources, not language families.</p><p>WALS adds language profiles and typological context; it does not supply word etymologies or territory boundaries. Missing coordinates never remove a word from the results.</p><p><a href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Wiktionary ↗</a> · <a href="https://glottolog.org" target="_blank" rel="noreferrer">Glottolog ↗</a> · <a href="https://wals.info" target="_blank" rel="noreferrer">WALS ↗</a></p><p>Speaker areas: <a href="https://doi.org/10.5281/zenodo.15287258" target="_blank" rel="noreferrer">Glottography / Asher &amp; Moseley (2007)</a>, CC BY 4.0. <a href="./data/LANGUAGE_SOURCES.md" target="_blank">Language data &amp; date sources ↗</a></p></details>
+        <details class="about"><summary>About the atlas &amp; sources</summary><p>Select a word to read its etymology in the sidebar, then choose whether to show its sources on the map. Tap +x to explore nearby languages. Separate ↗ links open Wiktionary. Colours group explicit etymological sources, not language families.</p><p>WALS adds language profiles and typological context; it does not supply word etymologies or territory boundaries. Missing coordinates never remove a word from the results.</p><p><a href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Wiktionary ↗</a> · <a href="https://glottolog.org" target="_blank" rel="noreferrer">Glottolog ↗</a> · <a href="https://wals.info" target="_blank" rel="noreferrer">WALS ↗</a></p><p>Speaker areas: <a href="https://doi.org/10.5281/zenodo.15287258" target="_blank" rel="noreferrer">Glottography / Asher &amp; Moseley (2007)</a>, CC BY 4.0. <a href="./data/LANGUAGE_SOURCES.md" target="_blank">Language data &amp; date sources ↗</a></p></details>
       </div>
     </aside>
     <div class="map-tools"><button id="map-home" class="icon-button" type="button" aria-label="Show all results" title="Show all results"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg></button></div>
