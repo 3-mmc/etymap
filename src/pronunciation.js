@@ -46,6 +46,7 @@ export function parseRenderedPronunciation(html, name) {
 }
 
 const cache = new Map();
+const renderedCache = new Map();
 const waiting = [];
 let active = 0;
 async function limited(task) {
@@ -55,19 +56,29 @@ async function limited(task) {
   finally { const next = waiting.shift(); if (next) next(); else active--; }
 }
 
-export function fetchPronunciation(term, code) {
+export function fetchRenderedEntry(term, code) {
   const name = LANGUAGES[code]?.wiktionaryName || languageName(code);
   const title = term.startsWith("*") ? "Reconstruction:"+name+"/"+term.slice(1) : term;
-  const key = code+":"+title;
-  if (cache.has(key)) return cache.get(key);
+  if (renderedCache.has(title)) return renderedCache.get(title);
   const promise = limited(async () => {
     const params = new URLSearchParams({action:"parse", page:title, prop:"text", redirects:"1", format:"json", formatversion:"2", origin:"*"});
     const response = await fetch("https://en.wiktionary.org/w/api.php?"+params, {signal:AbortSignal.timeout(20000)});
     if (!response.ok) throw new Error("Pronunciation lookup failed");
     const data = await response.json();
     if (data.error) throw new Error(data.error.info || "Pronunciation unavailable");
-    return parseRenderedPronunciation(data.parse?.text || "", name);
-  }).catch(error => {cache.delete(key); throw error;});
+    return data.parse?.text || "";
+  }).catch(error => {renderedCache.delete(title); throw error;});
+  renderedCache.set(title,promise);
+  if(renderedCache.size>16) renderedCache.delete(renderedCache.keys().next().value);
+  return promise;
+}
+
+export function fetchPronunciation(term, code) {
+  const name = LANGUAGES[code]?.wiktionaryName || languageName(code);
+  const key=code+":"+term;
+  if(cache.has(key)) return cache.get(key);
+  const promise=fetchRenderedEntry(term,code).then(html=>parseRenderedPronunciation(html,name))
+    .catch(error=>{cache.delete(key);throw error;});
   cache.set(key, promise);
   if (cache.size > 128) cache.delete(cache.keys().next().value);
   return promise;

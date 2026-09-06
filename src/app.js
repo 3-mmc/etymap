@@ -3,7 +3,8 @@ import { loadSpeakerArea } from "./geography.js";
 import { EARLIEST, PRESENT, formatYear, inPeriod, loadLanguageCatalog, periodLabel, resolveLanguage } from "./languages.js";
 import { buildJourney, enrichTranslations, fetchWikitext, getLanguageSection, parseTranslationSenses } from "./wiktionary.js";
 import { clusterPoints, colourForSource, prepareBasemap, nightPaint, labelLayout } from "./map-model.js";
-import { fetchPronunciation } from "./pronunciation.js";
+import { fetchPronunciation, fetchRenderedEntry } from "./pronunciation.js";
+import { parseRenderedFamily, familyGraph, familyTitle } from "./family.js";
 import { COVERAGE_DATE, SUGGESTED_WORDS } from "./suggestions.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -14,6 +15,9 @@ const state = {
   markerCache:new Map(), areaCache:new Map(), areaRenderer:null, focusMarker:null,
   geographyFrame:null, lineFrame:null, moving:false, dayStyle:null,
   selection:null, selectionController:null, selectionPages:new Map(), mapSnapshot:null,
+  openCluster:null, stackSequence:0,
+  journeyKind:"etymology",
+  reliefError:false,
   theme:document.documentElement.dataset.theme === "night" ? "night":"day"
 };
 const esc = (value = "") => String(value).replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[c]);
@@ -55,7 +59,8 @@ function applyBasemapOptions() {
   // Paint/layout changes only need the style graph, not all visible tiles downloaded.
   if (gl?.getLayer("background")) {
     for (const layer of gl.getStyle().layers) {
-      if (layer["source-layer"] === "boundary") gl.setLayoutProperty(layer.id,"visibility",$("#borders-toggle").checked ? "visible":"none");
+      if (layer.id === "etymap-relief") gl.setLayoutProperty(layer.id,"visibility",$("#relief-toggle").checked ? "visible":"none");
+      else if (layer["source-layer"] === "boundary") gl.setLayoutProperty(layer.id,"visibility",$("#borders-toggle").checked ? "visible":"none");
       else if (layer.type === "symbol") gl.setLayoutProperty(layer.id,"visibility",$("#labels-toggle").checked ? "visible":"none");
     }
   }
@@ -91,12 +96,22 @@ function scheduleJourneyLines() {
   state.lineFrame=requestAnimationFrame(()=>{state.lineFrame=null;drawJourneyLines();});
 }
 function resetMarkers() {
+  closeCluster();
   state.markers?.clearLayers();
   state.markerCache.clear();
   state.focusMarker=null;
 }
 function updateLabelDetail() {
   if (state.map) $("#map").dataset.detail=labelLayout(state.map.getZoom()).detail;
+}
+function resizeBasemap() {
+  if(!state.basemap) return;
+  // Adapter 0.1.0 repositions on resize but leaves its container at the original
+  // dimensions. Resize through public APIs before its camera synchronization.
+  const size=state.basemap.getSize(), container=state.basemap.getContainer();
+  container.style.width=size.x+"px";
+  container.style.height=size.y+"px";
+  state.basemap.getMaplibreMap().resize();
 }
 async function initMap() {
   if (!window.L) { message("The map could not load. Please check your connection and reload."); return; }
@@ -115,6 +130,7 @@ async function initMap() {
   state.map.on("zoomend", updateLabelDetail);
   state.map.on("move zoom resize", scheduleJourneyLines);
   state.map.on("movestart",()=>{
+    closeCluster();
     state.moving=true;
     state.areaRevision++;
     clearTimeout(state.areaTimer);
@@ -124,7 +140,7 @@ async function initMap() {
     if (state.mode === "compare") scheduleGeography();
     scheduleAreas();
   });
-  state.map.on("resize", () => { if(state.mode === "compare") scheduleGeography(); });
+  state.map.on("resize", () => { closeCluster(); resizeBasemap(); if(state.mode === "compare") scheduleGeography(); });
   try {
     if (!L.maplibreGL) throw new Error("Vector basemap unavailable");
     const response=await fetch("https://tiles.openfreemap.org/styles/positron");
@@ -133,6 +149,12 @@ async function initMap() {
     const style=prepareBasemap(state.dayStyle,state.theme);
     state.basemap=L.maplibreGL({style, interactive:false, attributionControl:false}).addTo(state.map);
     state.basemap.getMaplibreMap().on("load", applyMapTheme);
+    state.basemap.getMaplibreMap().on("error",event=>{
+      if(event.sourceId==="etymap-elevation" && !state.reliefError) {
+        state.reliefError=true;
+        message("Some terrain relief could not load. The language map remains available.");
+      }
+    });
   } catch {
     message("Using a simplified land map while the detailed basemap is unavailable.");
     try {
@@ -153,6 +175,7 @@ function currentItem(item) {
 }
 function findItem(id) {
   return state.nodes.find(value=>key(value)===id) || state.entries.find(value=>key(value)===id) ||
+    state.selection?.family?.graph?.nodes.find(value=>key(value)===id) ||
     (state.selection && key(state.selection.item)===id ? state.selection.item : null);
 }
 function readingContent(item, compact=false) {
@@ -168,7 +191,7 @@ function readings(item, compact=false) {
   return '<span class="readings" data-reading-key="'+esc(key(item))+'" data-compact="'+compact+'">'+readingContent(item,compact)+'</span>';
 }
 function refreshReadings(item) {
-  for(const value of [...state.entries,...state.nodes,state.selection?.item].filter(Boolean)) {
+  for(const value of [...state.entries,...state.nodes,...(state.selection?.family?.graph?.nodes || []),state.selection?.item].filter(Boolean)) {
     if(key(value)===key(item)) Object.assign(value,{transliteration:item.transliteration,ipa:item.ipa,readingStatus:item.readingStatus});
   }
   for(const node of document.querySelectorAll("[data-reading-key]")) {
@@ -206,14 +229,14 @@ function popup(item) {
     '<a class="popup-action" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">Open Wiktionary entry ↗</a><p>'+resourceLinks(item.code)+'</p>';
   return node;
 }
-function wordLabel(item) {
+function wordLabel(item,onSelect=()=>selectWord(currentItem(item))) {
   const node=document.createElement("div");
   node.className="word-chip";
   node.style.setProperty("--chip",color(item));
   node.innerHTML='<button type="button" class="map-word-select" aria-label="Explore '+esc(display(item)+' · '+languageName(item.code))+'"><b>'+esc(display(item))+'</b></button>'+readings(item,true)+
     '<small>'+esc(languageName(item.code))+' <a href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item))+' in Wiktionary">↗</a></small>';
   node.title=display(item)+" · "+languageName(item.code)+" · Explore etymology";
-  node.querySelector("button").addEventListener("click",()=>selectWord(currentItem(item)));
+  node.querySelector("button").addEventListener("click",onSelect);
   node.addEventListener("click",e=>e.stopPropagation());
   return node;
 }
@@ -232,6 +255,93 @@ function regionName(entries) {
   const historical=entries.map(i=>LANGUAGES[i.code]?.region).filter(Boolean);
   if(historical.length===entries.length && new Set(historical).size===1) return historical[0];
   return languageName(codes[0])+" + "+(codes.length-1);
+}
+function closeCluster(restoreFocus=false) {
+  const record=state.openCluster;
+  if(!record) return;
+  record.stack.hidden=true;
+  record.stack.replaceChildren();
+  record.remaining=[];
+  record.element.classList.remove("stack-open");
+  record.element.querySelector(".cluster-more").setAttribute("aria-expanded","false");
+  record.pinned=false;
+  state.openCluster=null;
+  if(restoreFocus) record.element.querySelector(".cluster-more").focus({preventScroll:true});
+}
+function appendClusterWords(record) {
+  const next=record.remaining.slice(record.stackCount,record.stackCount+30);
+  const fragment=document.createDocumentFragment();
+  for(const entry of next) {
+    const item=currentItem(entry), row=document.createElement("li");
+    row.style.setProperty("--chip",color(item));
+    row.innerHTML='<button type="button" class="stack-word" data-stack-word="'+esc(key(item))+'"><b>'+esc(display(item))+'</b><small>'+esc(languageName(item.code))+'</small></button>'+readings(item,true)+
+      '<a class="stack-wiki" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in Wiktionary">↗</a>';
+    fragment.append(row);
+  }
+  record.stack.querySelector("ol").append(fragment);
+  record.stackCount+=next.length;
+  const more=record.stack.querySelector(".stack-load-more");
+  more.hidden=record.stackCount>=record.remaining.length;
+  more.textContent="Show more · "+(record.remaining.length-record.stackCount)+" left";
+}
+function openCluster(record,pinned=false) {
+  if(state.openCluster===record) { record.pinned ||= pinned; return; }
+  closeCluster();
+  state.openCluster=record;
+  record.pinned=pinned;
+  record.remaining=record.items.filter(item=>key(item)!==key(record.representative));
+  record.stackCount=0;
+  record.stack.innerHTML='<ol aria-label="Other nearby word forms"></ol><button type="button" class="stack-load-more"></button><button type="button" class="stack-zoom">Zoom to this group ↗</button>';
+  appendClusterWords(record);
+  record.stack.hidden=false;
+  record.element.classList.add("stack-open");
+  record.element.querySelector(".cluster-more").setAttribute("aria-expanded","true");
+  // Prefer downwards; near the bottom edge, open above rather than off-screen.
+  // Keep clear of the mobile bottom card, without moving the map itself.
+  const rect=record.element.getBoundingClientRect();
+  const mapBottom=innerWidth<=700 ? Math.min(innerHeight,$(".info-card").getBoundingClientRect().top) : innerHeight;
+  const below=mapBottom-rect.bottom-16, above=rect.top-16;
+  const flip=below<120 && above>below;
+  record.stack.style.top=flip ? "auto":"100%";
+  record.stack.style.bottom=flip ? "100%":"auto";
+  record.stack.style.maxHeight=Math.max(0,Math.min(320,flip ? above:below))+"px";
+  record.stack.scrollTop=0;
+}
+function bindCluster(record) {
+  const element=record.element, button=element.querySelector(".cluster-more");
+  record.stack=element.querySelector(".cluster-stack");
+  record.stack.id="word-stack-"+(++state.stackSequence);
+  button.setAttribute("aria-controls",record.stack.id);
+  button.setAttribute("aria-expanded","false");
+  L.DomEvent.disableClickPropagation(element);
+  L.DomEvent.disableScrollPropagation(element);
+  element.addEventListener("pointerenter",event=>{if(event.pointerType==="mouse") openCluster(record);});
+  element.addEventListener("pointerleave",()=>{
+    if(state.openCluster===record && !record.pinned && !element.contains(document.activeElement)) closeCluster();
+  });
+  element.addEventListener("focusout",()=>queueMicrotask(()=>{
+    if(state.openCluster===record && !record.pinned && !element.matches(":hover") && !element.contains(document.activeElement)) closeCluster();
+  }));
+  element.querySelector(".cluster-word").addEventListener("click",()=>{
+    closeCluster(); selectWord(currentItem(record.representative));
+  });
+  button.addEventListener("click",()=>{
+    if(state.openCluster===record && record.pinned) closeCluster();
+    else openCluster(record,true);
+  });
+  record.stack.addEventListener("click",event=>{
+    const word=event.target.closest("[data-stack-word]");
+    if(word) {
+      const item=record.items.find(value=>key(value)===word.dataset.stackWord);
+      closeCluster(); if(item) selectWord(currentItem(item));
+    } else if(event.target.closest(".stack-load-more")) {
+      const previousCount=record.stackCount;
+      appendClusterWords(record);
+      record.stack.querySelectorAll(".stack-word")[previousCount]?.focus({preventScroll:true});
+    } else if(event.target.closest(".stack-zoom")) {
+      closeCluster(); openRegion(record.items,regionName(record.items));
+    }
+  });
 }
 function renderGeography() {
   if(!state.map || state.mode!=="compare") return;
@@ -252,12 +362,10 @@ function renderGeography() {
       else {
         const element=document.createElement("div");
         element.className="cluster-card";
-        element.innerHTML='<button class="cluster-word" type="button"></button><button class="cluster-more" type="button"></button><span class="cluster-reading"></span><small class="cluster-language"></small>';
+        element.innerHTML='<button class="cluster-word" type="button"></button><button class="cluster-more" type="button"></button><span class="cluster-reading"></span><small class="cluster-language"></small><div class="cluster-stack" hidden></div>';
         const icon=L.divIcon({className:"region-cluster-wrap",html:element,iconSize:[layout.width,layout.height],iconAnchor:[layout.width/2,layout.height/2]});
         record={marker:L.marker(state.map.unproject(group.point),{icon,keyboard:false}).addTo(state.markers),element};
-        const current=record;
-        element.querySelector(".cluster-word").addEventListener("click",event=>{event.stopPropagation();selectWord(currentItem(current.representative));});
-        record.marker.on("click",()=>openRegion(current.items,regionName(current.items)));
+        bindCluster(record);
       }
       state.markerCache.set(id,record);
     }
@@ -273,7 +381,7 @@ function renderGeography() {
         a.title=display(representative)+" · "+languageName(representative.code)+" · explore etymology";
         a.setAttribute("aria-label","Explore "+display(representative)+" · "+languageName(representative.code));
         button.textContent="+"+(items.length-1);
-        button.setAttribute("aria-label","Explore "+(items.length-1)+" more forms near "+languageName(representative.code));
+        button.setAttribute("aria-label","Show "+(items.length-1)+" more forms near "+languageName(representative.code));
         record.element.querySelector("small").textContent=languageName(representative.code);
         record.element.querySelector(".cluster-reading").innerHTML=readings(representative,true);
         record.element.style.setProperty("--chip",color(representative));
@@ -285,7 +393,10 @@ function renderGeography() {
     }
   }
   for(const [id,record] of state.markerCache) {
-    if(!retained.has(id) && !record.marker.isPopupOpen()) {state.markers.removeLayer(record.marker);state.markerCache.delete(id);}
+    if(!retained.has(id) && !record.marker.isPopupOpen()) {
+      if(state.openCluster===record) closeCluster();
+      state.markers.removeLayer(record.marker);state.markerCache.delete(id);
+    }
   }
 }
 function openRegion(items,name) {
@@ -401,7 +512,7 @@ async function renderAreas() {
   }
 }
 function updateCaption(areas=0) {
-  $("#map-caption-text").textContent=(state.mode==="journey" ? "Etymology · "+(state.selection?.item.term || "") : areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
+  $("#map-caption-text").textContent=(state.mode==="journey" ? (state.journeyKind==="family" ? "Word family · "+(state.selection?.family?.item.term || "") : "Etymology · "+(state.selection?.item.term || "")) : areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
 }
 
 function startSearch() {
@@ -477,17 +588,20 @@ async function changeSense() {
   try { await enrichAll(revision,signal); }
   catch(error) { if(revision===state.search && error.name!=="AbortError") { status("Etymology incomplete","error"); message(error.message); } }
 }
+function journeyNodes() {
+  return state.journeyKind==="family" ? state.selection?.family?.graph?.nodes || [] : state.nodes;
+}
 function renderJourney() {
   if(!state.map) return;
   resetMarkers(); state.areas.clearLayers();
-  const nodes=visible(state.nodes);
+  const all=journeyNodes(), nodes=visible(all);
   nodes.forEach(node=>{
     if(!node.point) return;
-    const index=state.nodes.indexOf(node);
-    const marker=L.marker(pointOnMap(node.point),{icon:L.divIcon({className:"journey-node",html:String(index+1),iconSize:[28,28],iconAnchor:[14,14]})}).addTo(state.markers);
+    const index=all.indexOf(node);
+    const marker=L.marker(pointOnMap(node.point),{icon:L.divIcon({className:"journey-node"+(node.term.startsWith("*") ? " reconstructed":""),html:String(index+1),iconSize:[28,28],iconAnchor:[14,14]})}).addTo(state.markers);
     marker.bindPopup(()=>popup(node));
     marker.on("popupopen",()=>loadReading(node));
-    marker.bindTooltip(wordLabel(node),{permanent:true,interactive:true,direction:index%2 ? "left":"right",offset:[index%2 ? -15:15,0],className:"word-label",opacity:1});
+    marker.bindTooltip(wordLabel(node,state.journeyKind==="family" ? ()=>loadFamily(node):undefined),{permanent:state.journeyKind!=="family" || nodes.length<=40,interactive:true,direction:index%2 ? "left":"right",offset:[index%2 ? -15:15,0],className:"word-label",opacity:1});
   });
   drawJourneyLines(); updateCaption();
 }
@@ -520,16 +634,100 @@ function renderSelection() {
     '<a class="selection-wiki" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">Open Wiktionary entry ↗</a>'+
     '<div class="selection-actions"><button type="button" id="show-etymology-map"'+(state.mode!=="journey" && (selection.status!=="ready" || !mapped.length) ? ' disabled':'')+'>'+(state.mode==="journey" ? '← Back to language map':'View etymology on map')+'</button></div>'+
     (selection.status==="loading" ? readings(item)+'<p class="source-caveat" role="status">Reading this word’s etymology…</p>' : selection.status==="error" ? readings(item)+'<p class="source-caveat" role="status">'+esc(selection.error)+'</p><button class="reading-button" id="retry-word-detail" type="button">Retry etymology ↻</button>' :
+      '<button class="family-launch" id="load-word-family" type="button">Explore descendants &amp; cognates</button><div id="family-panel"></div>'+
       '<ol class="journey-list">'+state.nodes.map((node,index)=>'<li><span class="number">'+(index+1)+'</span><a href="'+esc(wiktionaryUrl(node.term,node.code))+'" target="_blank" rel="noreferrer">'+esc(display(node))+'</a>'+readings(node)+'<small>'+esc(languageName(node.code))+' · '+esc(periodLabel(node.code))+(node.point ? "":" · location unavailable")+(!shown.has(node) ? " · outside map period":"")+'</small><span class="relation">'+esc(node.type==="current" ? "selected entry":(node.uncertain ? "possibly ":"")+(TYPE_LABELS[node.type] || "derived from"))+'</span><div class="entry-meta">'+resourceLinks(node.code)+'</div></li>').join("")+'</ol>'+
       (!mapped.length ? '<p class="source-caveat">No located stages in the current map period. Widen the time range; entry links remain available.</p>':'')+
       (state.nodes.length===1 ? '<p class="source-caveat">No supported explicit source templates were found. Wiktionary may contain more etymological discussion.</p>':'')+
       '<p class="source-caveat">The first etymology is shown; check Wiktionary for other homographs. Arrows run from each explicit source to the selected word, not an assumed chain. * marks reconstructions; dates describe languages, not words.</p>');
+  renderFamily();
   if(focusedId) document.getElementById(focusedId)?.focus({preventScroll:true});
+}
+
+function renderFamily() {
+  const panel=$("#family-panel"), family=state.selection?.family;
+  if(!panel) return;
+  $("#load-word-family").hidden=Boolean(family);
+  if(!family) { panel.innerHTML=""; return; }
+  const item=family.item;
+  const row=(form,relation="")=>'<div class="family-form"><button type="button" data-family-word="'+esc(key(form))+'"><b>'+esc(display(form))+'</b><small>'+esc(languageName(form.code))+(form.term.startsWith("*") ? ' · reconstructed':'')+(!form.point ? ' · location unavailable' : !visible([form]).length ? ' · outside map period':'')+'</small></button><a href="'+esc(form.url || wiktionaryUrl(form.term,form.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(form)+' · '+languageName(form.code))+' in Wiktionary">↗</a>'+readings(form,true)+(relation ? '<span class="family-relation">'+esc(relation)+'</span>':'')+(form.missing ? '<span class="family-relation">Wiktionary entry not yet written</span>':'')+'</div>';
+  panel.innerHTML='<section class="family-explorer"><div class="family-heading"><div><p class="selection-kicker">WORD FAMILY · '+esc(languageName(item.code))+'</p><h3 id="family-title" tabindex="-1">'+esc(display(item))+'</h3></div>'+(family.history.length ? '<button type="button" id="family-back" class="reading-button">← Previous family</button>':'')+'</div>'+
+    (family.status==="loading" ? '<p class="source-caveat" role="status">Reading descendants and cognates…</p>' : family.status==="error" ? '<p class="source-caveat" role="status">'+esc(family.error)+'</p><button type="button" id="retry-family" class="reading-button">Retry word family ↻</button>' : (()=>{
+      const data=family.data, descendants=data.descendants, count=descendants.filter(value=>value.item).length;
+      const mapped=visible(family.graph.nodes).filter(value=>value.point).length;
+      return '<p class="source-caveat">'+count+' descendant forms · '+data.cognates.length+' listed cognates · '+mapped+' located family forms in this period</p>'+
+        (mapped>40 ? '<p class="source-caveat">Large family: hover or focus map points for labels. All loaded forms remain available below.</p>':'')+
+        '<button type="button" id="show-family-map" class="family-launch"'+(!mapped && !(state.mode==="journey" && state.journeyKind==="family") ? ' disabled':'')+'>'+(state.mode==="journey" && state.journeyKind==="family" ? '← Back to language map':'View this family on map')+'</button>'+
+        '<p class="source-caveat">Follow a source or proto-form to find its other branches. Word buttons explore that form’s family; ↗ opens Wiktionary.</p>'+
+        '<h4>Sources &amp; earlier forms</h4>'+ (data.ancestors.map(form=>row(form,(form.uncertain ? 'possibly ':'')+(TYPE_LABELS[form.type] || 'explicit source'))).join("") || '<p class="source-caveat">No supported explicit sources in this etymology.</p>')+
+        '<h4>Descendant branches</h4><ol class="family-tree">'+descendants.slice(0,family.limit).map(branch=>'<li style="--depth:'+Math.min(branch.depth,5)+'">'+(branch.item ? row(branch.item,(branch.uncertain ? 'possibly ':'')+branch.relation+(branch.ambiguous ? ' · parent unresolved':'')+(branch.qualifier ? ' · '+branch.qualifier:'')) : '<span class="family-group">'+esc(branch.label)+'</span>')+'</li>').join("")+'</ol>'+
+        (descendants.length>family.limit ? '<button type="button" id="family-more" class="reading-button">Show more branches · '+(descendants.length-family.limit)+' rows remaining</button>':'')+
+        (!count ? '<p class="source-caveat">'+(data.hasDescendants ? 'No supported linked descendant forms were found in this section.':'No Descendants section was found for this etymology.')+' This does not prove that the word has no descendants.</p>':'')+
+        '<h4>Listed cognates</h4>'+ (data.cognates.map(form=>row(form,'listed cognate · check entry context'+(form.qualifier ? ' · '+form.qualifier:''))).join("") || '<p class="source-caveat">No explicit cognate templates found. Try an earlier form’s descendant tree.</p>')+
+        '<p class="source-caveat family-legend">Map: arrows follow documented source/descendant relationships; orange dashes mark borrowing, dotted lines without arrows mark listed cognates. These are not migration routes.</p>'+
+        '<p class="source-caveat">Wiktionary’s first etymology only, including descendant subtrees it renders. Not an exhaustive genealogy. Grouping rows are not reconstructed words; intermediate stages may be omitted. * marks a scholarly reconstruction, not an attestation. Locations and periods describe languages approximately.</p>'+
+        (data.skipped ? '<p class="source-caveat">'+data.skipped+' unsupported branch or template error(s); consult the source for missing detail.</p>':'')+
+        '<a class="family-source" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">Check the full source entry ↗</a>';
+    })())+'</section>';
+}
+
+async function loadFamily(item,{retry=false}={}) {
+  const selection=state.selection;
+  if(!selection || selection.status!=="ready" || !item) return;
+  returnToLanguages();
+  const previous=selection.family;
+  if(!retry && previous?.status==="ready" && key(previous.item)===key(item)) { $("#family-title")?.focus({preventScroll:true}); return; }
+  const family={item:{...item},status:"loading",limit:60,history:previous?.status==="ready" ? [...previous.history,previous].slice(-12) : previous?.history || []};
+  // History snapshots need no recursive copies of their own history.
+  if(previous?.status==="ready") family.history=family.history.map(({history,...snapshot})=>snapshot);
+  selection.family=family;
+  renderFamily(); $("#family-title")?.focus({preventScroll:true}); $("#family-panel")?.scrollIntoView({block:"nearest"});
+  try {
+    const title=familyTitle(item);
+    const raw=state.selectionPages.get(title) || await fetchWikitext(title,{signal:AbortSignal.any([state.selectionController.signal,AbortSignal.timeout(20000)])});
+    if(state.selection!==selection || selection.family!==family) return;
+    if(!raw) throw new Error("This linked Wiktionary entry has not been written yet, or is unavailable.");
+    state.selectionPages.set(title,raw);
+    if(state.selectionPages.size>64) state.selectionPages.delete(state.selectionPages.keys().next().value);
+    const html=await fetchRenderedEntry(item.term,item.code);
+    if(state.selection!==selection || selection.family!==family) return;
+    family.data=parseRenderedFamily(html,raw.text,item);
+    family.graph=familyGraph(family.data);
+    family.status="ready";
+  } catch(error) {
+    if(state.selection!==selection || selection.family!==family) return;
+    family.status="error";
+    family.error=error.name==="TimeoutError" ? "Wiktionary took too long. Please retry." : error.message;
+  }
+  renderFamily(); $("#family-title")?.focus({preventScroll:true});
+}
+
+function previousFamily() {
+  const family=state.selection?.family;
+  if(!family?.history.length) return;
+  returnToLanguages();
+  const history=[...family.history], previous=history.pop();
+  state.selection.family={...previous,history};
+  renderFamily(); $("#family-title")?.focus({preventScroll:true});
+}
+
+function showFamilyMap() {
+  const family=state.selection?.family;
+  if(state.mode==="journey" && state.journeyKind==="family") { returnToLanguages(); return; }
+  if(!state.map || family?.status!=="ready" || !visible(family.graph.nodes).some(node=>node.point)) return;
+  state.mapSnapshot ||= {center:state.map.getCenter(),zoom:state.map.getZoom()};
+  state.mode="journey"; state.journeyKind="family";
+  state.map.closePopup(); renderJourney(); scheduleAreas();
+  $("#map-drilldown").classList.remove("hidden");
+  $("#map-back").textContent="← Language map";
+  $("#map-place").textContent="Family · "+display(family.item);
+  fitItems(visible(family.graph.nodes),6);
+  renderSelection();
 }
 
 function returnToLanguages() {
   if(state.mode!=="journey") return;
   state.mode="compare";
+  state.journeyKind="etymology";
   resetMarkers();
   $("#journey-lines").innerHTML="";
   $("#map-back").textContent="← All results";
@@ -553,6 +751,7 @@ function showEtymologyMap() {
   if(!state.map || state.selection?.status!=="ready" || !visible(state.nodes).some(node=>node.point)) return;
   state.mapSnapshot ||= {center:state.map.getCenter(),zoom:state.map.getZoom()};
   state.mode="journey";
+  state.journeyKind="etymology";
   state.map.closePopup();
   renderJourney(); scheduleAreas();
   $("#map-drilldown").classList.remove("hidden");
@@ -611,18 +810,19 @@ async function selectWord(item,{retry=false}={}) {
 function drawJourneyLines() {
   const svg=$("#journey-lines");
   if(state.mode!=="journey" || !state.map) { svg.innerHTML=""; return; }
-  const nodes=visible(state.nodes);
+  const nodes=new Map(visible(journeyNodes()).filter(node=>node.point).map(node=>[key(node),node]));
   const root=state.nodes[0];
-  if(!root?.point || !nodes.includes(root)) { svg.innerHTML=""; return; }
+  const edges=state.journeyKind==="family" ? state.selection?.family?.graph?.edges || [] : state.nodes.slice(1).map(node=>({from:key(node),to:key(root),kind:"source"}));
   const size=state.map.getSize();
   svg.setAttribute("viewBox","0 0 "+size.x+" "+size.y);
-  const to=state.map.latLngToContainerPoint(pointOnMap(root.point));
   const parts=['<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path class="journey-arrow" d="M0,0 L0,6 L8,3 z"/></marker></defs>'];
-  for(const node of nodes) {
-    if(node===root || !node.point) continue;
-    const from=state.map.latLngToContainerPoint(pointOnMap(node.point));
+  for(const edge of edges) {
+    const source=nodes.get(edge.from), target=nodes.get(edge.to);
+    if(!source || !target) continue;
+    const from=state.map.latLngToContainerPoint(pointOnMap(source.point));
+    const to=state.map.latLngToContainerPoint(pointOnMap(target.point));
     const bend=Math.max(40,Math.abs(to.x-from.x)*.2);
-    parts.push('<path class="journey-line" d="M '+from.x+' '+from.y+' Q '+((from.x+to.x)/2)+' '+(Math.min(from.y,to.y)-bend)+' '+to.x+' '+to.y+'" marker-end="url(#arrow)"/>');
+    parts.push('<path class="journey-line family-'+edge.kind+(edge.uncertain ? ' uncertain':'')+'" d="M '+from.x+' '+from.y+' Q '+((from.x+to.x)/2)+' '+(Math.min(from.y,to.y)-bend)+' '+to.x+' '+to.y+'"'+(edge.kind==="cognate" ? '':' marker-end="url(#arrow)"')+'><title>'+esc((edge.uncertain ? 'possibly ':'')+(edge.label || 'explicit source'))+'</title></path>');
   }
   svg.innerHTML=parts.join("");
 }
@@ -646,6 +846,12 @@ function updatePeriod(changed) {
 }
 
 function bindEvents() {
+  document.addEventListener("pointerdown",event=>{
+    if(state.openCluster && !state.openCluster.element.contains(event.target)) closeCluster();
+  },true);
+  document.addEventListener("keydown",event=>{
+    if(event.key==="Escape" && state.openCluster) { event.preventDefault(); closeCluster(true); }
+  });
   renderSuggestions();
   document.addEventListener("click",event=>{
     const button=event.target.closest("[data-pronunciation]");
@@ -677,6 +883,7 @@ function bindEvents() {
   });
   $("#map-home").addEventListener("click",allResults); $("#map-back").addEventListener("click",allResults);
   $("#labels-toggle").addEventListener("change",applyBasemapOptions); $("#borders-toggle").addEventListener("change",applyBasemapOptions);
+  $("#relief-toggle").addEventListener("change",()=>{state.reliefError=false;applyBasemapOptions();});
   $("#speaker-toggle").addEventListener("change",scheduleAreas);
   $("#time-from").addEventListener("input",()=>updatePeriod("from")); $("#time-to").addEventListener("input",()=>updatePeriod("to"));
   $("#undated-toggle").addEventListener("change",()=>updatePeriod());
@@ -697,7 +904,14 @@ function bindEvents() {
     state.focusMarker?.openPopup();
   });
   $("#word-detail").addEventListener("click",event=>{
-    if(event.target.closest("#show-etymology-map")) showEtymologyMap();
+    const familyWord=event.target.closest("[data-family-word]");
+    if(familyWord) loadFamily(state.selection?.family?.graph?.nodes.find(item=>key(item)===familyWord.dataset.familyWord));
+    else if(event.target.closest("#load-word-family")) loadFamily(state.selection.item);
+    else if(event.target.closest("#retry-family")) loadFamily(state.selection.family.item,{retry:true});
+    else if(event.target.closest("#family-back")) previousFamily();
+    else if(event.target.closest("#family-more")) { state.selection.family.limit+=60; renderFamily(); $("#family-more")?.focus({preventScroll:true}); }
+    else if(event.target.closest("#show-family-map")) showFamilyMap();
+    else if(event.target.closest("#show-etymology-map")) showEtymologyMap();
     else if(event.target.closest("#retry-word-detail")) selectWord(state.selection.item,{retry:true});
     else if(event.target.closest("#close-word-detail")) { closeSelection(); $("#entry-filter")?.focus(); }
   });

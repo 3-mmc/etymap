@@ -43,7 +43,7 @@ test("night style changes colours without changing tile sources or reintroducing
   assert.equal(night.layers.some(l=>l.id.includes("label_country")),false);
   assert.equal(night.layers.find(l=>l.id==="boundary").layout.visibility,"none");
   assert.notEqual(night.layers[1].paint["fill-color"],day.layers[1].paint["fill-color"]);
-  assert.equal(night.layers[2].paint["text-color"],"#c0d0d4");
+  assert.equal(night.layers.find(layer=>layer.id==="label_state").paint["text-color"],"#c0d0d4");
   assert.equal(source.layers[0].paint["background-color"],"white");
 });
 

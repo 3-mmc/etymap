@@ -14,13 +14,15 @@ const fixtures={
   "𒀀":`==Sumerian==\n===Noun===\n{{head|sux|noun|tr=a}}`
 };
 try {
-  const page=await browser.newPage({viewport:{width:1440,height:1000}});
+  const page=await browser.newPage({viewport:{width:1440,height:1000},hasTouch:true});
   const errors=[]; page.on("pageerror",error=>errors.push(error.message));
   let failFrench=false;
   const requests=[];
   await page.route("**/src/app.js",async route=>{
     const response=await route.fetch();
-    await route.fulfill({response,body:(await response.text())+"\nwindow.__state=state;window.__select=selectWord;"});
+    // Terrain is covered by check-relief.mjs; keep lexical fixtures offline.
+    const source=(await response.text()).replace('const style=prepareBasemap(state.dayStyle,state.theme);','const style=prepareBasemap(state.dayStyle,state.theme); style.layers=style.layers.filter(layer=>layer.id!=="etymap-relief"); delete style.sources["etymap-elevation"];');
+    await route.fulfill({response,body:source+"\nwindow.__state=state;window.__select=selectWord;"});
   });
   await page.route("https://tiles.openfreemap.org/styles/positron",route=>route.fulfill({json:{version:8,sources:{},layers:[{id:"background",type:"background",paint:{"background-color":"#d3e4e6"}}]}}));
   await page.route("https://en.wiktionary.org/w/api.php?*",async route=>{
@@ -82,6 +84,10 @@ try {
   await page.waitForFunction(()=>__state.selection?.status==="ready");
   assert.equal(await page.evaluate(()=>__state.mode),"compare");
   await page.locator('.cluster-more').first().click();
+  await page.waitForSelector('.cluster-stack:not([hidden])');
+  assert.equal(await page.evaluate(()=>__state.region),null);
+  assert.ok(await page.locator('.cluster-stack:not([hidden]) .stack-wiki').count());
+  await page.locator('.cluster-stack:not([hidden]) .stack-zoom').click();
   await page.waitForFunction(()=>Boolean(__state.region) && !__state.moving);
   const regional=await page.evaluate(()=>[...__state.region].sort());
   await page.locator('#show-etymology-map').click();
@@ -91,11 +97,84 @@ try {
   await page.locator('#close-word-detail').click();
   await page.evaluate(()=>__state.map.setView([50,20],7,{animate:false}));
   await page.waitForSelector('.map-word-select');
+  await page.mouse.move(1430,10);
+  const chip=page.locator('.word-chip').first();
+  const chipWidth=await chip.evaluate(node=>node.getBoundingClientRect().width);
+  await chip.hover();
+  assert.equal(await chip.evaluate(node=>node.getBoundingClientRect().width),chipWidth,"Hover does not widen single labels");
   await page.locator('.map-word-select').first().click();
   await page.waitForFunction(()=>__state.selection?.status==="ready");
   assert.equal(await page.evaluate(()=>__state.mode),"compare");
+  await page.locator('#close-word-detail').click();
+  await page.evaluate(()=>__state.map.setView([50,0],2,{animate:false}));
+  await page.waitForSelector('.cluster-card');
+  await page.mouse.move(1430,10);
+  const card=page.locator('.cluster-card').first();
+  const cardWidth=await card.evaluate(node=>node.getBoundingClientRect().width);
+  const requestsBeforeHover=requests.length;
+  await card.hover();
+  const stack=page.locator('.cluster-stack:not([hidden])');
+  await stack.waitFor();
+  assert.equal(await card.evaluate(node=>node.getBoundingClientRect().width),cardWidth,"Hover does not widen clusters");
+  const cardBox=await card.boundingBox(),stackBox=await stack.boundingBox();
+  assert.ok(stackBox.y>=cardBox.y+cardBox.height-2,"Stack descends from the main card");
+  assert.ok(Math.abs(stackBox.width-cardBox.width)<5,"Stack keeps the main card width");
+  if(process.env.ETYMAP_SCREENSHOT) await page.screenshot({path:process.env.ETYMAP_SCREENSHOT});
+  assert.equal(requests.length,requestsBeforeHover,"Hover does not fetch entries");
+  await page.mouse.move(1430,10);
+  assert.equal(await stack.count(),0,"Unpinned hover preview closes on leave");
+  const more=card.locator('.cluster-more');
+  await more.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await more.getAttribute('aria-expanded'),'true');
+  await page.keyboard.press('Escape');
+  assert.equal(await more.getAttribute('aria-expanded'),'false');
+  assert.ok(await more.evaluate(node=>node===document.activeElement));
+  await page.keyboard.press('Enter');
+  const stackWord=stack.locator('.stack-word').first();
+  const selectedKey=await stackWord.getAttribute('data-stack-word');
+  await stackWord.click();
+  await page.waitForFunction(()=>__state.selection?.status==='ready');
+  assert.equal(await page.evaluate(()=>__state.selection.item.code+':'+__state.selection.item.term),selectedKey);
+  assert.equal(await stack.count(),0);
+  // Large groups construct only 30 rows until more are requested.
+  await page.locator('#close-word-detail').click();
+  await page.evaluate(()=>{
+    const item=__state.entries.find(item=>item.code==='pl');
+    __state.entries.push(...Array.from({length:75},(_,i)=>({...item,term:'test-'+i,display:'test-'+i})));
+    __state.map.setView([50,0],2.1,{animate:false});
+  });
+  await page.waitForFunction(()=>[...document.querySelectorAll('.cluster-more')].some(node=>parseInt(node.textContent.slice(1))>=75));
+  const bigCard=page.locator('.cluster-card').filter({has:page.locator('.cluster-more', {hasText:/\+(7[5-9]|8\d)/})}).first();
+  await bigCard.locator('.cluster-more').click();
+  assert.equal(await stack.locator('.stack-word').count(),30);
+  await stack.locator('.stack-load-more').click();
+  assert.equal(await stack.locator('.stack-word').count(),60);
+  const zoomBeforeWheel=await page.evaluate(()=>__state.map.getZoom());
+  await stack.hover();
+  await page.mouse.wheel(0,150);
+  await page.waitForTimeout(250);
+  assert.equal(await page.evaluate(()=>__state.map.getZoom()),zoomBeforeWheel,"Scrolling the stack does not zoom the map");
+  await page.evaluate(()=>__state.map.panBy([50,0],{animate:false}));
+  assert.equal(await stack.count(),0,"Map movement dismisses the stack");
   await page.setViewportSize({width:390,height:844});
+  await page.locator('#collapse-card').click();
+  await page.evaluate(()=>__state.map.setView([50,0],2.2,{animate:false}));
+  await page.waitForSelector('.cluster-card');
+  const mobileMore=page.locator('.cluster-more').first();
+  await mobileMore.tap();
+  assert.equal(await mobileMore.getAttribute('aria-expanded'),'true',"Touch opens a persistent stack");
+  const mobileStackBox=await stack.boundingBox();
+  const mobilePanelBox=await page.locator('.info-card').boundingBox();
+  assert.ok(mobileStackBox.y+mobileStackBox.height<=mobilePanelBox.y,"Stack stays clear of the mobile panel");
+  await page.locator('#theme-toggle').click();
+  assert.equal(await stack.count(),0,"Clicking elsewhere dismisses the stack");
+  await mobileMore.tap();
+  assert.equal(await stack.evaluate(node=>node.scrollTop),0,"Reopening starts at the top of the word stack");
+  if(process.env.ETYMAP_SCREENSHOT) await page.screenshot({path:process.env.ETYMAP_SCREENSHOT.replace('.png','-mobile.png')});
+  await mobileMore.tap();
+  assert.equal(await mobileMore.getAttribute('aria-expanded'),'false',"Touch can close the stack again");
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);
-  console.log("Explorer browser checks passed: list/cluster/single-label selection, map round-trip, filters and regional groups, races, retries, unlocated entries, direct historical lookup, mobile, and external links.");
+  console.log("Explorer browser checks passed: stable hover widths, descending stacks, keyboard and dismissal, lazy rows, scroll isolation, list/cluster/single-label selection, map round-trip, filters and regional groups, races, retries, unlocated entries, direct historical lookup, mobile, and external links.");
 } finally { await browser.close(); }

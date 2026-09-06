@@ -78,7 +78,7 @@ export function getEtymologySection(languageSection) {
   return rest.slice(0, next?.index ?? rest.length);
 }
 
-function splitTemplate(raw) {
+export function splitTemplate(raw) {
   const parts = raw.split("|").map((part) => part.trim());
   const named = {};
   const positional = [];

@@ -52,6 +52,7 @@
         <details class="map-options">
           <summary>Map &amp; time <span id="options-summary">All periods</span></summary>
           <div class="options-body">
+            <label class="toggle-row"><span>Terrain relief<small>Mountains, valleys &amp; geographic context</small></span><input id="relief-toggle" type="checkbox" checked /></label>
             <label class="toggle-row"><span>Speaker territories<small>Contemporary areas where available</small></span><input id="speaker-toggle" type="checkbox" checked /></label>
             <label class="toggle-row"><span>Political outlines<small>Optional geographic reference</small></span><input id="borders-toggle" type="checkbox" /></label>
             <label class="toggle-row"><span>Regional place labels</span><input id="labels-toggle" type="checkbox" checked /></label>
@@ -76,7 +77,7 @@
     <div id="map-drilldown" class="map-drilldown hidden"><button id="map-back" type="button">← All results</button><span id="map-place"></span></div>
     <div id="map-message" class="map-message hidden" role="status"></div>
     <div class="map-caption"><span class="caption-dot"></span><span id="map-caption-text">Language locations · all periods</span></div>
-    <div class="map-attribution"><a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://www.naturalearthdata.com" target="_blank" rel="noreferrer">Natural Earth</a></div>
+    <div class="map-attribution"><a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://www.naturalearthdata.com" target="_blank" rel="noreferrer">Natural Earth</a> · <a href="./data/TERRAIN_SOURCES.md" target="_blank" rel="noreferrer">Terrain: Mapzen &amp; sources</a></div>
   </main>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js"></script>

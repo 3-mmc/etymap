@@ -61,10 +61,25 @@ export function colourForSource(source, label) {
 export function prepareBasemap(input, theme = "day") {
   const style = structuredClone(input);
   style.layers = style.layers.filter((layer) => !layer.id.includes("label_country"));
+  // A flat shaded-relief layer, not an extruded 3D mesh: language points and
+  // relationship arrows keep their geographic alignment with Leaflet.
+  if(!style.layers.some(layer=>layer.id==="etymap-relief")) {
+    style.sources ||= {};
+    style.sources["etymap-elevation"]={type:"raster-dem",tiles:["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],encoding:"terrarium",tileSize:256,maxzoom:12,
+      attribution:'Terrain: <a href="https://www.mapzen.com/rights/">Mapzen</a> · <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">terrain data sources</a>'};
+    const relief={id:"etymap-relief",type:"hillshade",source:"etymap-elevation",paint:{
+      "hillshade-illumination-direction":315,"hillshade-illumination-anchor":"map",
+      "hillshade-exaggeration":["interpolate",["linear"],["zoom"],0,.3,4,.55,8,.65],
+      "hillshade-shadow-color":"#526653","hillshade-highlight-color":"#fffef3","hillshade-accent-color":"#83926d"}};
+    const water=style.layers.find(layer=>layer.id==="water" && layer.type==="fill");
+    // Shade above landcover, then mask bathymetry so seas stay visually quiet.
+    const index=style.layers.findIndex(layer=>["line","symbol"].includes(layer.type));
+    style.layers.splice(index<0 ? style.layers.length:index,0,relief,...(water ? [{...structuredClone(water),id:"etymap-water-mask"}]:[]));
+  }
   for (const layer of style.layers) {
     if (layer["source-layer"] === "boundary") layer.layout = {...layer.layout, visibility:"none"};
     if (layer.id === "background") layer.paint = {"background-color":"#eff1e8"};
-    if (layer.id === "water") layer.paint = {...layer.paint, "fill-color":"#d3e4e6"};
+    if (["water","etymap-water-mask"].includes(layer.id)) layer.paint = {...layer.paint, "fill-color":"#d3e4e6"};
     if (layer.id === "label_state") layer.minzoom = 3;
     if(theme === "night") layer.paint = nightPaint(layer);
   }
@@ -87,5 +102,10 @@ export function nightPaint(layer) {
   }
   if(layer.type === "fill-extrusion") paint["fill-extrusion-color"]="#2c3c48";
   if(layer.type === "raster") {paint["raster-brightness-max"]=.25;paint["raster-saturation"]=-.8;}
+  if(layer.type === "hillshade") {
+    paint["hillshade-shadow-color"]="#060f18";
+    paint["hillshade-highlight-color"]="#73948f";
+    paint["hillshade-accent-color"]="#24474a";
+  }
   return paint;
 }

@@ -112,8 +112,8 @@ export function languageName(code) {
 export function wiktionaryUrl(term, languageCode) {
   const sectionName = LANGUAGES[languageCode]?.wiktionaryName || LANGUAGES[languageCode]?.name;
   const anchor = sectionName ? `#${sectionName.replaceAll(" ", "_")}` : "";
-  if (term.startsWith("*") && LANGUAGES[languageCode]?.name.startsWith("Proto-")) {
-    const title = `Reconstruction:${LANGUAGES[languageCode].name}/${term.slice(1)}`;
+  if (term.startsWith("*") && sectionName) {
+    const title = `Reconstruction:${sectionName}/${term.slice(1)}`;
     return `https://en.wiktionary.org/wiki/${encodeURIComponent(title).replaceAll("%2F", "/")}`;
   }
   return `https://en.wiktionary.org/wiki/${encodeURIComponent(term)}${anchor}`;

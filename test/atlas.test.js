@@ -70,10 +70,10 @@ test("blank Glottolog coordinates never turn into a false location at zero", () 
 test("basemap removes country names but keeps regional labels and optional outlines", () => {
   const original={layers:[{id:"label_country_1",type:"symbol"},{id:"label_state",type:"symbol",minzoom:5},{id:"boundary_2","source-layer":"boundary"}]};
   const style=prepareBasemap(original);
-  assert.equal(style.layers.length,2);
-  assert.equal(style.layers[0].id,"label_state");
-  assert.equal(style.layers[0].minzoom,3);
-  assert.equal(style.layers[1].layout.visibility,"none");
+  assert.equal(style.layers.length,3);
+  assert.ok(!style.layers.some(layer=>layer.id.includes("label_country")));
+  assert.equal(style.layers.find(layer=>layer.id==="label_state").minzoom,3);
+  assert.equal(style.layers.find(layer=>layer.id==="boundary_2").layout.visibility,"none");
   assert.equal(original.layers.length,3);
 });
 
