@@ -115,26 +115,27 @@ h1 { font-size:26px; line-height:1.18; font-weight:650; letter-spacing:-.8px; ma
   .map-drilldown { left:14px; top:60px; max-width:calc(100% - 85px); font-size:10px; }.map-drilldown button { padding:11px; }.map-message { bottom:auto; top:112px; left:14px; transform:none; max-width:calc(100% - 82px); }.map-attribution { font-size:8px; width:100%; text-align:right; }
 }
 @media(prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
-/* Aero glass: blur is limited to the floating UI, never to each map marker. */
+/* Lightweight glass: translucent tint and edge highlights, no refraction shaders.
+   Blur is limited to the floating UI, never to individual map labels. */
 :root {
   color-scheme:light;
-  --glass:rgba(240,249,250,.78); --glass-solid:#edf6f6;
-  --glass-sheen:rgba(255,255,255,.66); --glass-edge:rgba(255,255,255,.82);
+  --glass:rgba(240,249,250,.58); --glass-solid:#edf6f6;
+  --glass-sheen:rgba(255,255,255,.42); --glass-edge:rgba(255,255,255,.82);
   --glass-shadow:0 14px 44px #183c4d30,0 2px 6px #183c4d18,inset 0 1px 0 #ffffffb3;
   --control:rgba(255,255,255,.64); --control-active:rgba(255,255,255,.9);
   --well:rgba(77,121,134,.1); --hover:rgba(82,151,163,.17);
   --ink:#253e48; --muted:#526c76; --accent:#196b91; --line:rgba(60,101,118,.18);
-  --chip-surface:rgba(247,252,253,.94); --water:#d3e4e6;
+  --chip-surface:rgba(247,252,253,.84); --water:#d3e4e6;
 }
 :root[data-theme="night"] {
   color-scheme:dark;
-  --glass:rgba(22,42,57,.80); --glass-solid:#1b303f;
+  --glass:rgba(22,42,57,.64); --glass-solid:#1b303f;
   --glass-sheen:rgba(150,203,230,.16); --glass-edge:rgba(191,225,249,.27);
   --glass-shadow:0 16px 50px #0007,0 2px 8px #0004,inset 0 1px 0 #dbf0ff30;
   --control:rgba(115,166,195,.1); --control-active:rgba(128,191,218,.22);
   --well:rgba(4,14,25,.28); --hover:rgba(119,189,220,.18);
   --ink:#e0edf3; --muted:#a6bdc9; --accent:#88d6f2; --line:rgba(170,208,228,.18);
-  --chip-surface:rgba(28,47,63,.96); --water:#0d1d29;
+  --chip-surface:rgba(28,47,63,.88); --water:#0d1d29;
 }
 .card-actions { display:flex; gap:7px; align-items:center; }
 .brand { gap:9px; font-weight:750; letter-spacing:-1.1px; }
@@ -147,8 +148,8 @@ h1 { font-size:26px; line-height:1.18; font-weight:650; letter-spacing:-.8px; ma
   background:linear-gradient(145deg,var(--glass-sheen),transparent 150px),var(--glass);
   border:1px solid var(--glass-edge); border-radius:18px;
   box-shadow:var(--glass-shadow);
-  -webkit-backdrop-filter:blur(16px) saturate(155%);
-  backdrop-filter:blur(16px) saturate(155%);
+  -webkit-backdrop-filter:blur(12px) saturate(140%);
+  backdrop-filter:blur(12px) saturate(140%);
 }
 .card-header { background:linear-gradient(to bottom,var(--glass-sheen),transparent); border-bottom:1px solid var(--glass-edge); margin-bottom:16px; }
 .card-header .icon-button { background:linear-gradient(var(--glass-sheen),transparent),var(--control); border:1px solid var(--glass-edge); box-shadow:inset 0 1px 0 var(--glass-sheen),0 1px 3px #0001; border-radius:7px; }
@@ -194,10 +195,46 @@ input::placeholder { color:var(--muted); opacity:1; }
   .info-card,.map-tools .icon-button,.map-caption,.map-drilldown,.map-message { background:var(--glass-solid); }
 }
 @media(prefers-reduced-transparency:reduce) {
-  .info-card,.map-tools .icon-button,.map-caption,.map-drilldown,.map-message { background:var(--glass-solid); backdrop-filter:none; -webkit-backdrop-filter:none; }
+  .info-card,.map-tools .icon-button,.map-caption,.map-drilldown,.map-message,.word-chip,.cluster-card { background:var(--glass-solid); backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
 }
 @media(max-width:700px) {
   .brand-logo { width:38px; height:38px; }
   .card-header { margin-bottom:12px; }
-  .info-card { backdrop-filter:blur(12px) saturate(140%); -webkit-backdrop-filter:blur(12px) saturate(140%); }
+  .info-card { backdrop-filter:blur(8px) saturate(140%); -webkit-backdrop-filter:blur(8px) saturate(140%); }
 }
+
+/* Semantic zoom: keep useful words at world scale; reveal readings regionally.
+   Actual layout sizes (not transformed bitmaps) preserve sharp text/hit targets. */
+.readings { display:block; min-width:0; margin:3px 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.reading-line { display:flex; align-items:baseline; gap:5px; }
+.reading-kind { flex-shrink:0; color:var(--muted); font-size:9px; font-weight:600; }
+.reading-qualifier,.reading-note { color:var(--muted); font-size:10px; }
+.reading-note { display:block; }
+.reading-button { display:block; background:transparent; color:var(--accent); font-size:10px; min-height:24px; padding:3px 0; text-align:left; }
+.reading-button:hover { text-decoration:underline; }
+.reading-button:disabled { cursor:progress; color:var(--muted); }
+.word-chip { width:174px; max-width:174px; white-space:normal; }
+.word-chip b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.word-chip .readings,.cluster-card .readings { font-size:11px; line-height:1.35; margin:2px 0; }
+.word-chip .reading-line > span:last-child,.cluster-card .reading-line > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cluster-card { width:174px; min-height:42px; }
+.cluster-reading { grid-column:1/-1; min-width:0; }
+.word-chip small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#map[data-detail="medium"] .cluster-card { width:144px; }
+#map[data-detail="medium"] .cluster-word,#map[data-detail="medium"] .word-chip b { font-size:14px; }
+#map[data-detail="medium"] .word-chip { width:144px; max-width:144px; }
+#map[data-detail="medium"] .word-chip .readings,#map[data-detail="medium"] .cluster-card .readings { font-size:10px; }
+#map[data-detail="compact"] .cluster-card { width:104px; min-height:34px; padding:3px 5px; gap:3px; }
+#map[data-detail="compact"] .cluster-word,#map[data-detail="compact"] .word-chip b { font-size:11px; }
+#map[data-detail="compact"] .cluster-more { font-size:10px; padding:3px; min-width:26px; }
+#map[data-detail="compact"] .word-chip { width:104px; max-width:104px; min-height:30px; justify-content:center; padding:4px 7px; }
+#map[data-detail="compact"] .cluster-reading,#map[data-detail="compact"] .cluster-language,
+#map[data-detail="compact"] .word-chip .readings,#map[data-detail="compact"] .word-chip small { display:none; }
+/* Keyboard focus and pointer hover provide a close-reading preview without zoom. */
+#map .cluster-card:is(:hover,:focus-within) { width:190px; background:var(--glass-solid); position:relative; z-index:1; }
+#map .word-chip:is(:hover,:focus-visible) { width:230px; max-width:260px; min-width:150px; background:var(--glass-solid); }
+#map .cluster-card:is(:hover,:focus-within) .cluster-word,#map .word-chip:is(:hover,:focus-visible) b { font-size:16px; }
+#map .cluster-card:is(:hover,:focus-within) .cluster-reading,#map .cluster-card:is(:hover,:focus-within) .cluster-language,
+#map .word-chip:is(:hover,:focus-visible) .readings,#map .word-chip:is(:hover,:focus-visible) small { display:block; }
+#map .word-chip:is(:hover,:focus-visible) .reading-line > span:last-child { white-space:normal; }
+.region-cluster-wrap:has(.cluster-card:is(:hover,:focus-within)),.word-label:has(.word-chip:is(:hover,:focus-visible)) { z-index:10000!important; }

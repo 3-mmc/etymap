@@ -1,5 +1,11 @@
 // Screen-distance clusters shrink naturally into smaller groups as the user zooms.
 // They never use political containment to assign a language to a country.
+export function labelLayout(zoom) {
+  if (zoom < 3.5) return {detail:"compact", width:104, height:34, radius:82};
+  if (zoom < 6) return {detail:"medium", width:144, height:76, radius:115};
+  return {detail:"close", width:174, height:86, radius:135};
+}
+
 export function clusterPoints(projected, radius = 75) {
   const groups = [];
   const cells = new Map();

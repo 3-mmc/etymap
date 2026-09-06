@@ -90,6 +90,52 @@ function splitTemplate(raw) {
   return { name: parts[0].toLowerCase().replaceAll("_", " "), positional, named };
 }
 
+export function cleanReading(value = "") {
+  const text = cleanTerm(value);
+  return text === "-" || /[{}<>]/.test(text) ? "" : text;
+}
+
+// Only explicit IPA output is safe here: language-specific templates often take
+// respellings as input and need MediaWiki to generate the actual pronunciation.
+export function parsePronunciation(wikitext, code) {
+  const meta = LANGUAGES[code];
+  if (!meta) return {transliteration:"", ipa:[]};
+  const language = getLanguageSection(wikitext, meta.wiktionaryName || meta.name);
+  const section = language.split(/^={3,5}Etymology 2={3,5}\s*$/m)[0];
+  const start = /^(={3,5})Pronunciation(?: 1)?\1\s*$/m.exec(section);
+  let pronunciation = "";
+  if (start) {
+    const rest = section.slice(start.index + start[0].length);
+    const next = new RegExp(`^={3,${start[1].length}}[^=].*?=+\\s*$`, "m").exec(rest);
+    pronunciation = rest.slice(0, next?.index ?? rest.length);
+  }
+  const ipa = [];
+  for (const match of pronunciation.matchAll(/\{\{([^{}]+)\}\}/g)) {
+    const t = splitTemplate(match[1]);
+    if (t.name !== "ipa" || t.positional[0] !== code) continue;
+    const prefix=pronunciation.slice(pronunciation.lastIndexOf("\n",match.index)+1,match.index);
+    const lineQualifiers=[...prefix.matchAll(/\{\{([^{}]+)\}\}/g)].map(value=>splitTemplate(value[1]))
+      .filter(value=>["a","accent","q","qual","qualifier"].includes(value.name))
+      .flatMap(value=>value.positional).map(cleanReading).filter(Boolean);
+    t.positional.slice(1).filter(value => value !== ";").forEach((value, index) => {
+      const text = cleanReading(value);
+      if (!/^(\/.*\/|\[.*\])$/.test(text)) return;
+      const qualifier = [...lineQualifiers, t.named[`a${index+1}`], t.named[`q${index+1}`], t.named[`qq${index+1}`]].map(cleanReading).filter(Boolean).join(" · ");
+      if (!ipa.some(item => item.text === text && item.qualifier === qualifier)) ipa.push({text, qualifier});
+    });
+  }
+  let transliteration = "";
+  for (const match of section.matchAll(/\{\{([^{}]+)\}\}/g)) {
+    const t = splitTemplate(match[1]);
+    if ((t.name === "head" && t.positional[0] === code) ||
+        (t.name.startsWith(code+"-") && /^(noun|proper noun|proper-noun|verb|adj|adv|pron|num|letter|root)(?:-|$)/.test(t.name.slice(code.length+1)))) {
+      transliteration = cleanReading(t.named.tr);
+      break;
+    }
+  }
+  return {transliteration, ipa};
+}
+
 export function parseTranslations(wikitext) {
   return parseTranslationSenses(wikitext).sort((a, b) => b.entries.length - a.entries.length)[0]?.entries || [];
 }
@@ -119,7 +165,7 @@ function parseTranslationBlock(block) {
     if (!LANGUAGES[code]) LANGUAGES[code] = { name: label || code };
     if (label) LANGUAGES[code].wiktionaryName ||= label;
     seen.add(key);
-    translations.push({ code, term, display:cleanTerm(template.named.alt || term), transliteration:template.named.tr || "", language: label || languageName(code) });
+    translations.push({ code, term, display:cleanTerm(template.named.alt || term), transliteration:cleanReading(template.named.tr), language: label || languageName(code) });
   }
   return translations;
 }
@@ -166,7 +212,7 @@ export function parseEtymology(wikitext, languageCode) {
         const edgeKey = `${source}:${term}:${type}`;
         if (seen.has(edgeKey)) continue;
         seen.add(edgeKey);
-        edges.push({ type, target:languageCode, source, term, sourceName:languageName(source), uncertain:uncertain || parameter.includes("<unc>") });
+        edges.push({ type, target:languageCode, source, term, transliteration:cleanReading(/<tr:([^>]+)>/.exec(parameter)?.[1]), sourceName:languageName(source), uncertain:uncertain || parameter.includes("<unc>") });
       }
       continue;
     }
@@ -177,7 +223,7 @@ export function parseEtymology(wikitext, languageCode) {
     const key = `${source}:${term}:${template.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    edges.push({ type: template.name.replace(/\+$/, "").replaceAll(" ", "_"), target, source, term, sourceName: languageName(source) });
+    edges.push({ type: template.name.replace(/\+$/, "").replaceAll(" ", "_"), target, source, term, transliteration:cleanReading(template.named.tr), sourceName: languageName(source) });
   }
   return edges;
 }
@@ -193,19 +239,21 @@ export async function enrichTranslations(translations, options) {
   return translations.map((item) => {
     const page = pages.get(item.term) || byLowerTitle.get(item.term.toLocaleLowerCase());
     const edges = page ? parseEtymology(page.text, item.code) : [];
-    return { ...item, ...chooseCluster(edges, item.code), edges };
+    const reading = page ? parsePronunciation(page.text, item.code) : {ipa:[]};
+    return { ...item, ...reading, transliteration:item.transliteration || reading.transliteration || "", ...chooseCluster(edges, item.code), edges };
   });
 }
 
 export function buildJourney(word, languageCode, wikitext) {
   const edges = parseEtymology(wikitext, languageCode);
-  const nodes = [{ code: languageCode, term: word, type: "current", era: LANGUAGES[languageCode]?.era || (LANGUAGES[languageCode]?.historical ? "Historical language" : "Selected entry"), point: LANGUAGES[languageCode]?.point }];
+  const nodes = [{ code: languageCode, term: word, ...parsePronunciation(wikitext, languageCode), type: "current", era: LANGUAGES[languageCode]?.era || (LANGUAGES[languageCode]?.historical ? "Historical language" : "Selected entry"), point: LANGUAGES[languageCode]?.point }];
   let lastCode = languageCode;
   for (const edge of edges) {
     if (!edge.term || edge.source === lastCode) continue;
     nodes.push({
       code: edge.source,
       term: edge.term,
+      transliteration: edge.transliteration,
       type: edge.type,
       uncertain: edge.uncertain || false,
       era: LANGUAGES[edge.source]?.era || "Earlier form",

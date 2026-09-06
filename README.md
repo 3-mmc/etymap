@@ -8,6 +8,10 @@ The BeOS-inspired SVG logo doubles as the favicon. Aero Glass panels have transl
 
 Map clusters show a representative **word +x**, where x counts the other forms, not languages. The representative is the form closest to the cluster's centre, with a stable code/term tie-break. Click the word to open Wiktionary or +x to explore the group. This is a geographic representative, not an etymological-confidence ranking.
 
+Labels use **semantic zoom**: compact words at world scale, then larger words, language names, romanisation and IPA at regional/close zoom. Hover or keyboard-focus a label for a readable preview; the side panel always exposes the full available readings. Denser clusters still expand through +x, so labels do not need to become microscopic. The lighter glass uses 12px desktop / 8px mobile panel blur, simple highlights, and no per-label blur or refraction effects.
+
+Romanisation and IPA are separately labelled under word forms. Explicit IPA and headword romanisations are extracted during the existing etymology fetches. “Get pronunciation”, opening a word's location popup, or selecting a journey root retrieves Wiktionary's rendered pronunciation (including language-template-generated IPA). These lookups are cached and limited to two concurrent requests; panning never starts pronunciation requests. Unavailable readings are not invented. Only the requested language's first pronunciation section/first homograph is used; check Wiktionary for additional homographs, dialects, audio, and qualifications. A romanisation is not an IPA transcription. Historical-language pronunciations may be scholarly reconstructions.
+
 Pan/zoom rendering reuses unchanged markers and speaker-area layers, coalesces marker work into animation frames, and uses a spatial grid to find neighbouring clusters. Speaker polygons share a Canvas renderer; inactive rendered layers have a bounded reuse cache. Pending territory work is invalidated as movement begins, and network failures can be retried. Basemap loading no longer delays word searches. Tile downloads still depend on the map provider and connection.
 
 ## Exploring
