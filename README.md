@@ -1,8 +1,14 @@
-# Etymon
+# Etymap
 
 A full-page atlas of words, published at [3-mmc.github.io/etymap](https://3-mmc.github.io/etymap/).
 
 The map fills the viewport. A floating left-hand card contains search, word data, Wiktionary links, WALS profiles, display options, and time controls. On phones it becomes a collapsible bottom card.
+
+The BeOS-inspired SVG logo doubles as the favicon. Aero Glass panels have translucent tint, a glossy highlight, and restrained blur, with solid fallbacks for reduced-transparency preferences. The moon/sun button switches the UI and basemap between day and night; the initial mode follows your system and an explicit choice is remembered. Changing themes recolours the existing map without fetching a second tileset.
+
+Map clusters show a representative **word +x**, where x counts the other forms, not languages. The representative is the form closest to the cluster's centre, with a stable code/term tie-break. Click the word to open Wiktionary or +x to explore the group. This is a geographic representative, not an etymological-confidence ranking.
+
+Pan/zoom rendering reuses unchanged markers and speaker-area layers, coalesces marker work into animation frames, and uses a spatial grid to find neighbouring clusters. Speaker polygons share a Canvas renderer; inactive rendered layers have a bounded reuse cache. Pending territory work is invalidated as movement begins, and network failures can be retried. Basemap loading no longer delays word searches. Tile downloads still depend on the map provider and connection.
 
 ## Exploring
 

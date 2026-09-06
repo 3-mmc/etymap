@@ -123,7 +123,7 @@ export async function loadSpeakerArea(glottocode) {
       .then((response) => {
         if (!response.ok) throw new Error("Speaker-area index is unavailable");
         return response.json();
-      });
+      }).catch((error) => { speakerAreaIndexPromise=null; throw error; });
   }
   const index = await speakerAreaIndexPromise;
   if (!index[glottocode]) return null;
@@ -131,11 +131,11 @@ export async function loadSpeakerArea(glottocode) {
     speakerAreaCache.set(glottocode, (async () => {
       const url = new URL(`../data/speaker-areas/${glottocode}.json.gz`, import.meta.url);
       const response = await fetch(url);
-      if (!response.ok) return null;
+      if (!response.ok) throw new Error(`Speaker area returned ${response.status}`);
       if (typeof DecompressionStream === "undefined") throw new Error("This browser cannot decompress speaker-area vectors");
       const decompressed = response.body.pipeThrough(new DecompressionStream("gzip"));
       return new Response(decompressed).json();
-    })());
+    })().catch((error) => { speakerAreaCache.delete(glottocode); throw error; }));
   }
   return speakerAreaCache.get(glottocode);
 }

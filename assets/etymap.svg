@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Etymap</title>
+  <defs>
+    <linearGradient id="blue" x2="0" y2="1"><stop stop-color="#369bea"/><stop offset="1" stop-color="#135498"/></linearGradient>
+    <linearGradient id="red" x2="0" y2="1"><stop stop-color="#ff6860"/><stop offset="1" stop-color="#c9383f"/></linearGradient>
+    <linearGradient id="yellow" x2="0" y2="1"><stop stop-color="#ffe775"/><stop offset="1" stop-color="#e6ad29"/></linearGradient>
+  </defs>
+  <path fill="#12263a" fill-opacity=".2" d="M9 10h34v8h14v43H20v-8H9z"/>
+  <path fill="url(#red)" stroke="#a8333b" d="M5.5 6.5h27v35h-27z"/>
+  <path fill="#fff" fill-opacity=".5" d="M7 8h24v2H7z"/>
+  <path fill="url(#yellow)" stroke="#b1872f" d="M20.5 24.5h37v32h-37z"/>
+  <path fill="#fff" fill-opacity=".6" d="M22 26h34v2H22z"/>
+  <path fill="url(#blue)" stroke="#154678" d="M14.5 12.5h36v36h-36z"/>
+  <path fill="#fff" fill-opacity=".5" d="M16 14h33v2H16z"/>
+  <path fill="#092f58" fill-opacity=".5" d="M24 23h20v6H30v3h12v6H30v3h14v6H24z"/>
+  <path fill="#fff" d="M22 20h20v6H28v3h12v6H28v3h14v6H22z"/>
+</svg>

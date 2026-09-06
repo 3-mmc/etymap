@@ -2,13 +2,16 @@ import { LANGUAGES, TYPE_LABELS, languageName, wiktionaryUrl } from "./data.js";
 import { loadSpeakerArea } from "./geography.js";
 import { EARLIEST, PRESENT, formatYear, inPeriod, loadLanguageCatalog, periodLabel, resolveLanguage } from "./languages.js";
 import { buildJourney, enrichTranslations, fetchWikitext, getLanguageSection, parseTranslationSenses } from "./wiktionary.js";
-import { clusterPoints, colourForSource, prepareBasemap } from "./map-model.js";
+import { clusterPoints, colourForSource, prepareBasemap, nightPaint } from "./map-model.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
   mode:"compare", map:null, basemap:null, fallback:null, markers:null, areas:null,
   entries:[], senses:[], concept:"water", nodes:[], region:null, search:0, areaRevision:0,
-  controller:null, entryQuery:"", entryLimit:60, areaTimer:null, messageTimer:null
+  controller:null, entryQuery:"", entryLimit:60, areaTimer:null, messageTimer:null,
+  markerCache:new Map(), areaCache:new Map(), areaRenderer:null, focusMarker:null,
+  geographyFrame:null, lineFrame:null, moving:false, dayStyle:null,
+  theme:document.documentElement.dataset.theme === "night" ? "night":"day"
 };
 const esc = (value = "") => String(value).replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[c]);
 const key = (item) => item.code + ":" + item.term;
@@ -52,7 +55,41 @@ function applyBasemapOptions() {
       else if (layer.type === "symbol") gl.setLayoutProperty(layer.id,"visibility",$("#labels-toggle").checked ? "visible":"none");
     }
   }
-  state.fallback?.setStyle({weight:$("#borders-toggle").checked ? .6:0, color:"#95a99a"});
+  state.fallback?.setStyle({weight:$("#borders-toggle").checked ? .6:0, color:state.theme === "night" ? "#647985":"#95a99a", fillColor:state.theme === "night" ? "#182730":"#eff1e8"});
+}
+function syncThemeButton() {
+  $("#theme-toggle").setAttribute("aria-pressed",String(state.theme === "night"));
+  $("#theme-toggle").title=state.theme === "night" ? "Switch to day mode":"Switch to night mode";
+  document.querySelector('meta[name="theme-color"]').content=state.theme === "night" ? "#142531":"#d8e9e9";
+}
+function applyMapTheme() {
+  const gl=state.basemap?.getMaplibreMap();
+  if(gl?.isStyleLoaded() && state.dayStyle) {
+    const themed=prepareBasemap(state.dayStyle,state.theme);
+    for(const layer of themed.layers) {
+      const day=state.dayStyle.layers.find(l=>l.id===layer.id);
+      for(const property of Object.keys(nightPaint(day))) gl.setPaintProperty(layer.id,property,layer.paint?.[property] ?? null);
+    }
+  }
+  applyBasemapOptions();
+}
+function setTheme(theme) {
+  state.theme=theme;
+  document.documentElement.dataset.theme=theme;
+  syncThemeButton(); applyMapTheme();
+}
+function scheduleGeography() {
+  if(state.geographyFrame || state.moving) return;
+  state.geographyFrame=requestAnimationFrame(()=>{state.geographyFrame=null;renderGeography();});
+}
+function scheduleJourneyLines() {
+  if(state.mode !== "journey" || state.lineFrame) return;
+  state.lineFrame=requestAnimationFrame(()=>{state.lineFrame=null;drawJourneyLines();});
+}
+function resetMarkers() {
+  state.markers?.clearLayers();
+  state.markerCache.clear();
+  state.focusMarker=null;
 }
 async function initMap() {
   if (!window.L) { message("The map could not load. Please check your connection and reload."); return; }
@@ -64,21 +101,29 @@ async function initMap() {
   L.control.zoom({position:"topright"}).addTo(state.map);
   state.map.createPane("land").style.zIndex=200;
   state.map.createPane("territories").style.zIndex=350;
+  state.areaRenderer=L.canvas({pane:"territories",padding:.3});
   state.markers=L.layerGroup().addTo(state.map);
   state.areas=L.layerGroup().addTo(state.map);
-  state.map.on("move zoom resize", drawJourneyLines);
+  state.map.on("move zoom resize", scheduleJourneyLines);
+  state.map.on("movestart",()=>{
+    state.moving=true;
+    state.areaRevision++;
+    clearTimeout(state.areaTimer);
+  });
   state.map.on("moveend", () => {
-    if (state.mode === "compare") renderGeography();
+    state.moving=false;
+    if (state.mode === "compare") scheduleGeography();
     scheduleAreas();
   });
-  state.map.on("resize", () => { if(state.mode === "compare") renderGeography(); });
+  state.map.on("resize", () => { if(state.mode === "compare") scheduleGeography(); });
   try {
     if (!L.maplibreGL) throw new Error("Vector basemap unavailable");
     const response=await fetch("https://tiles.openfreemap.org/styles/positron");
     if (!response.ok) throw new Error("Basemap unavailable");
-    const style=prepareBasemap(await response.json());
+    state.dayStyle=prepareBasemap(await response.json());
+    const style=prepareBasemap(state.dayStyle,state.theme);
     state.basemap=L.maplibreGL({style, interactive:false, attributionControl:false}).addTo(state.map);
-    state.basemap.getMaplibreMap().on("load", applyBasemapOptions);
+    state.basemap.getMaplibreMap().on("load", applyMapTheme);
   } catch {
     message("Using a simplified land map while the detailed basemap is unavailable.");
     try {
@@ -131,18 +176,53 @@ function regionName(entries) {
 }
 function renderGeography() {
   if(!state.map || state.mode!=="compare") return;
-  state.markers.clearLayers();
-  const entries=visible(state.entries).filter(i=>LANGUAGES[i.code]?.point && state.map.getBounds().pad(.3).contains(pointOnMap(LANGUAGES[i.code].point)));
+  const bounds=state.map.getBounds().pad(.3);
+  const entries=visible(state.entries).filter(i=>LANGUAGES[i.code]?.point && bounds.contains(pointOnMap(LANGUAGES[i.code].point)));
   const projected=entries.map(item=>({item, point:state.map.project(pointOnMap(LANGUAGES[item.code].point))}));
-  const groups=clusterPoints(projected, state.map.getZoom()>=7 ? 45:75);
+  const groups=clusterPoints(projected, state.map.getZoom()>=7 ? 70:105);
+  const retained=new Set();
   for(const group of groups) {
     const items=group.items;
-    if(items.length===1) { addWord(items[0],state.map.getZoom()>=3); continue; }
-    const label=regionName(items);
-    const icon=L.divIcon({className:"region-cluster-wrap",iconSize:[54,76],iconAnchor:[27,27],
-      html:'<button class="region-cluster" aria-label="'+esc(label+', '+items.length+' entries. Explore nearby languages.')+'"><b>'+items.length+'</b></button><span class="region-label">'+esc(label)+'</span>'});
-    const marker=L.marker(state.map.unproject(group.point),{icon,keyboard:false}).addTo(state.markers);
-    marker.on("click",()=>openRegion(items,label));
+    const id=JSON.stringify(items.map(key).sort());
+    retained.add(id);
+    const representative=group.representative;
+    let record=state.markerCache.get(id);
+    if(!record) {
+      if(items.length===1) record={marker:addWord(items[0],true)};
+      else {
+        const element=document.createElement("div");
+        element.className="cluster-card";
+        element.innerHTML='<a class="cluster-word" target="_blank" rel="noreferrer"></a><button class="cluster-more" type="button"></button><small class="cluster-language"></small>';
+        element.querySelector("a").addEventListener("click",event=>event.stopPropagation());
+        const icon=L.divIcon({className:"region-cluster-wrap",html:element,iconSize:[134,55],iconAnchor:[67,27]});
+        record={marker:L.marker(state.map.unproject(group.point),{icon,keyboard:false}).addTo(state.markers),element};
+        const current=record;
+        record.marker.on("click",()=>openRegion(current.items,regionName(current.items)));
+      }
+      state.markerCache.set(id,record);
+    }
+    record.items=items;
+    const position=items.length===1 ? pointOnMap(LANGUAGES[items[0].code].point):state.map.unproject(group.point);
+    if(!record.marker.getLatLng().equals(position)) record.marker.setLatLng(position);
+    const signature=JSON.stringify([key(representative),color(representative)]);
+    if(record.signature!==signature) {
+      if(record.element) {
+        const a=record.element.querySelector("a"), button=record.element.querySelector("button");
+        a.textContent=display(representative); a.href=wiktionaryUrl(representative.term,representative.code);
+        a.title=display(representative)+" · "+languageName(representative.code)+" · open Wiktionary";
+        button.textContent="+"+(items.length-1);
+        button.setAttribute("aria-label","Explore "+(items.length-1)+" more forms near "+languageName(representative.code));
+        record.element.querySelector("small").textContent=languageName(representative.code);
+        record.element.style.setProperty("--chip",color(representative));
+      } else {
+        record.marker.setStyle({fillColor:color(representative)});
+        record.marker.getTooltip()?.getContent()?.style.setProperty("--chip",color(representative));
+      }
+      record.signature=signature;
+    }
+  }
+  for(const [id,record] of state.markerCache) {
+    if(!retained.has(id) && !record.marker.isPopupOpen()) {state.markers.removeLayer(record.marker);state.markerCache.delete(id);}
   }
 }
 function openRegion(items,name) {
@@ -205,7 +285,7 @@ function renderStory() {
 }
 function renderComparison() {
   state.nodes=[]; $("#journey-lines").innerHTML="";
-  renderStory(); renderGeography(); scheduleAreas();
+  renderStory(); scheduleGeography(); scheduleAreas();
 }
 function scheduleAreas() {
   clearTimeout(state.areaTimer);
@@ -215,28 +295,45 @@ function scheduleAreas() {
 async function renderAreas() {
   const revision=state.areaRevision;
   if(!state.map) return;
-  state.areas.clearLayers();
   const eligible=state.mode==="compare" && $("#speaker-toggle").checked && period().to>=PRESENT && state.map.getZoom()>=3;
-  if(!eligible) { updateCaption(); return; }
+  if(!eligible) { state.areas.clearLayers(); updateCaption(); return; }
+  const bounds=state.map.getBounds().pad(.2);
   const entries=visible(state.entries).filter(i=>{
     const meta=LANGUAGES[i.code];
-    return meta?.glottocode && !meta.historical && meta.point && state.map.getBounds().pad(.2).contains(pointOnMap(meta.point));
+    return meta?.glottocode && !meta.historical && meta.point && bounds.contains(pointOnMap(meta.point));
   });
   const unique=[...new Map(entries.map(i=>[LANGUAGES[i.code].glottocode,i])).values()];
-  let cursor=0, count=0, failures=0;
+  const wanted=new Set(unique.map(i=>LANGUAGES[i.code].glottocode));
+  for(const [code,record] of state.areaCache) {
+    if(!wanted.has(code)) state.areas.removeLayer(record.layer);
+  }
+  let cursor=0, failures=0;
   await Promise.all(Array.from({length:Math.min(4,unique.length)},async()=>{
     while(cursor<unique.length && revision===state.areaRevision) {
       const item=unique[cursor++];
       try {
-        const feature=await loadSpeakerArea(LANGUAGES[item.code].glottocode);
-        if(!feature || revision!==state.areaRevision) continue;
-        L.geoJSON(feature,{pane:"territories",interactive:false,style:{color:color(item),weight:1,fillColor:color(item),fillOpacity:.15}}).addTo(state.areas);
-        count++;
+        const code=LANGUAGES[item.code].glottocode;
+        let record=state.areaCache.get(code);
+        if(!record) {
+          const feature=await loadSpeakerArea(code);
+          if(!feature || revision!==state.areaRevision) continue;
+          const layer=L.geoJSON(feature,{renderer:state.areaRenderer,pane:"territories",interactive:false,style:{color:color(item),weight:1,fillColor:color(item),fillOpacity:.15}});
+          record={layer,color:color(item)};
+          state.areaCache.set(code,record);
+        }
+        if(record.color!==color(item)) {record.layer.setStyle({color:color(item),fillColor:color(item)});record.color=color(item);}
+        if(!state.areas.hasLayer(record.layer)) state.areas.addLayer(record.layer);
+        // Refresh recency; inactive rendered geometry is bounded, decoded data remains cached.
+        state.areaCache.delete(code);state.areaCache.set(code,record);
       } catch { failures++; }
     }
   }));
   if(revision===state.areaRevision) {
-    updateCaption(count);
+    updateCaption(state.areas.getLayers().length);
+    for(const [code,record] of state.areaCache) {
+      if(state.areaCache.size<=80) break;
+      if(!wanted.has(code)) state.areaCache.delete(code);
+    }
     if(failures) message("Some speaker territories could not load. Language points remain available.");
   }
 }
@@ -263,7 +360,7 @@ async function enrichAll(revision,signal) {
     const updates=new Map(batch.map(i=>[key(i),i]));
     state.entries=state.entries.map(i=>updates.get(key(i)) || i);
     // Preserve the user's place in the list and open controls while data arrives.
-    renderEntryList(); renderGeography();
+    renderEntryList(); scheduleGeography();
   }
   if(revision===state.search) { renderStory(); scheduleAreas(); status("Wiktionary · "+new Set(state.entries.map(i=>i.code)).size+" languages"); }
 }
@@ -312,7 +409,7 @@ async function changeSense() {
 }
 function renderJourney() {
   if(!state.map) return;
-  state.markers.clearLayers(); state.areas.clearLayers();
+  resetMarkers(); state.areas.clearLayers();
   const nodes=visible(state.nodes);
   nodes.forEach(node=>{
     if(!node.point) return;
@@ -393,6 +490,17 @@ function updatePeriod(changed) {
 }
 
 function bindEvents() {
+  syncThemeButton();
+  let themeChosen=false;
+  try { themeChosen=Boolean(localStorage.getItem("etymap-theme")); } catch { /* optional storage */ }
+  $("#theme-toggle").addEventListener("click",()=>{
+    themeChosen=true;
+    setTheme(state.theme === "night" ? "day":"night");
+    try { localStorage.setItem("etymap-theme",state.theme); } catch { /* retain for this session */ }
+  });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change",event=>{
+    if(!themeChosen) setTheme(event.matches ? "night":"day");
+  });
   document.querySelectorAll(".mode-tab").forEach(b=>b.addEventListener("click",()=>switchMode(b.dataset.mode)));
   $("#compare-form").addEventListener("submit",e=>{e.preventDefault();loadComparison($("#concept-input").value);});
   $("#journey-form").addEventListener("submit",e=>{e.preventDefault();loadJourney($("#word-input").value,resolveLanguage($("#language-input").value));});
@@ -419,7 +527,9 @@ function bindEvents() {
     const item=state.entries.find(i=>key(i)===button.dataset.entry);
     if(!item) return;
     fitItems([item],7);
-    addWord(item)?.openPopup();
+    if(state.focusMarker) state.markers.removeLayer(state.focusMarker);
+    state.focusMarker=addWord(item);
+    state.focusMarker?.openPopup();
   });
 }
 async function start() {
@@ -432,8 +542,8 @@ async function start() {
     $("#language-list").innerHTML=Object.entries(LANGUAGES).filter(([code])=>!code.includes("_")).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([code,m])=>'<option value="'+esc(m.name)+'">'+esc(code+(m.historical ? " · historical":""))+'</option>').join("");
     $("#language-input").placeholder="Search "+count.toLocaleString()+" languages…";
   } catch { message("The full language catalogue could not load. Core languages are available; reload to retry."); }
-  await mapReady;
   updatePeriod();
   if(state.search===0) loadComparison("water");
+  await mapReady;
 }
 start();
