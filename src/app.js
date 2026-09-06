@@ -49,7 +49,8 @@ function pointOnMap(point) {
 }
 function applyBasemapOptions() {
   const gl = state.basemap?.getMaplibreMap();
-  if (gl?.isStyleLoaded()) {
+  // Paint/layout changes only need the style graph, not all visible tiles downloaded.
+  if (gl?.getLayer("background")) {
     for (const layer of gl.getStyle().layers) {
       if (layer["source-layer"] === "boundary") gl.setLayoutProperty(layer.id,"visibility",$("#borders-toggle").checked ? "visible":"none");
       else if (layer.type === "symbol") gl.setLayoutProperty(layer.id,"visibility",$("#labels-toggle").checked ? "visible":"none");
@@ -64,7 +65,7 @@ function syncThemeButton() {
 }
 function applyMapTheme() {
   const gl=state.basemap?.getMaplibreMap();
-  if(gl?.isStyleLoaded() && state.dayStyle) {
+  if(gl?.getLayer("background") && state.dayStyle) {
     const themed=prepareBasemap(state.dayStyle,state.theme);
     for(const layer of themed.layers) {
       const day=state.dayStyle.layers.find(l=>l.id===layer.id);
