@@ -1,0 +1,28 @@
+{
+  "id": "wold",
+  "label": "World Loanword Database",
+  "repo": "lexibank/wold",
+  "version": "v4.2",
+  "commit": "1df62b9bdc7292b35982aea49b4d5bd1951f6f3e",
+  "doi": "https://doi.org/10.5281/zenodo.21415389",
+  "hashes": {
+    "cldf/languages.csv": "b4138940684e909c1c64bfb8f680d307c97b4deedf0732ee83ab92c097413084",
+    "cldf/cldf-metadata.json": "8e3483b5e20c1f6adcf34c0e4ef603d4cb2a0237c812bec93fab81635c88efea",
+    "cldf/parameters.csv": "c06348f803fc4d5a607d60e8d94d8dfe47d09afae11f623ea3083a5998251964",
+    "cldf/sources.bib": "65472165e2f14d8b22467cb95f4a1573abe42a6b06383a8bf25a25bf45031f0a",
+    "LICENSE": "945fbcb37deca05bccd7c3ca0e261679f1f5373515504fdbad68f6f3cf6f49b9",
+    "cldf/forms.csv": "2a7e5f5bd981063758a018fa5b264d3e8ac63cf3768f38c56e6b18942a59a6c7"
+  },
+  "stats": {
+    "input": 64289,
+    "forms": 64289,
+    "skipped": 0,
+    "withoutWordCitation": 0,
+    "varieties": 41,
+    "locatedVarieties": 41,
+    "glottocodes": 41,
+    "concepts": 1814,
+    "compressedBytes": 7755818,
+    "maxShardBytes": 8413
+  }
+}

@@ -45,8 +45,8 @@ export function loadLanguageCatalog() {
 
 export function resolveLanguage(value) {
   const search = value.trim().toLowerCase();
-  if (LANGUAGES[search]) return search;
-  return Object.keys(LANGUAGES).find((code) => [LANGUAGES[code].name, LANGUAGES[code].wiktionaryName].some((name) => name?.toLowerCase() === search));
+  if (LANGUAGES[search] && !LANGUAGES[search].lexicalDataset) return search;
+  return Object.keys(LANGUAGES).find((code) => !LANGUAGES[code].lexicalDataset && [LANGUAGES[code].name, LANGUAGES[code].wiktionaryName].some((name) => name?.toLowerCase() === search));
 }
 
 export function formatYear(year) {

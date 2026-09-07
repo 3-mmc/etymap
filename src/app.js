@@ -2,10 +2,11 @@ import { LANGUAGES, TYPE_LABELS, languageName, wiktionaryUrl } from "./data.js";
 import { loadSpeakerArea } from "./geography.js";
 import { EARLIEST, PRESENT, formatYear, inPeriod, loadLanguageCatalog, periodLabel, resolveLanguage } from "./languages.js";
 import { buildJourney, enrichTranslations, fetchWikitext, getLanguageSection, parseTranslationSenses } from "./wiktionary.js";
-import { clusterPoints, colourForSource, prepareBasemap, nightPaint, labelLayout } from "./map-model.js";
+import { layoutClusters, colourForSource, prepareBasemap, nightPaint, labelLayout } from "./map-model.js";
 import { fetchPronunciation, fetchRenderedEntry } from "./pronunciation.js";
 import { parseRenderedFamily, familyGraph, familyTitle } from "./family.js";
 import { COVERAGE_DATE, SUGGESTED_WORDS } from "./suggestions.js";
+import { entryKey, entryUrl, entrySource, loadLexicalIndex, loadLexicalConcept, registerLexicalLanguages, matchConcepts } from "./lexical.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
@@ -18,10 +19,12 @@ const state = {
   openCluster:null, stackSequence:0,
   journeyKind:"etymology",
   reliefError:false,
+  lexicalIndex:null, lexicalConcept:null, lexicalLimit:12, itemIndex:null, clusterLayout:null,
+  periodFrame:null, listFrame:null, territoryTotal:0,
   theme:document.documentElement.dataset.theme === "night" ? "night":"day"
 };
 const esc = (value = "") => String(value).replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[c]);
-const key = (item) => item.code + ":" + item.term;
+const key = entryKey;
 const display = (item) => item.display || item.term;
 const locateIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 4 13 21l-3-7-7-3Z"/></svg>';
 const period = () => ({from:+$("#time-from").value, to:+$("#time-to").value, undated:$("#undated-toggle").checked});
@@ -89,7 +92,7 @@ function setTheme(theme) {
 }
 function scheduleGeography() {
   if(state.geographyFrame || state.moving) return;
-  state.geographyFrame=requestAnimationFrame(()=>{state.geographyFrame=null;renderGeography();});
+  state.geographyFrame=requestAnimationFrame(()=>{state.geographyFrame=null;if(!state.moving) renderGeography();});
 }
 function scheduleJourneyLines() {
   if(state.mode !== "journey" || state.lineFrame) return;
@@ -118,6 +121,7 @@ async function initMap() {
   state.map = L.map("map", {
     center:[25,25], zoom:2.4, zoomSnap:.1, minZoom:1, maxZoom:14,
     zoomControl:false, attributionControl:false, worldCopyJump:true,
+    preferCanvas:true, wheelDebounceTime:30,
     maxBounds:[[-85,-Infinity],[85,Infinity]], maxBoundsViscosity:1
   });
   L.control.zoom({position:"topright"}).addTo(state.map);
@@ -132,11 +136,13 @@ async function initMap() {
   state.map.on("movestart",()=>{
     closeCluster();
     state.moving=true;
+    $(".atlas").classList.add("map-moving");
     state.areaRevision++;
     clearTimeout(state.areaTimer);
   });
   state.map.on("moveend", () => {
     state.moving=false;
+    $(".atlas").classList.remove("map-moving");
     if (state.mode === "compare") scheduleGeography();
     scheduleAreas();
   });
@@ -174,11 +180,20 @@ function currentItem(item) {
   return findItem(key(item)) || item;
 }
 function findItem(id) {
-  return state.nodes.find(value=>key(value)===id) || state.entries.find(value=>key(value)===id) ||
+  if(state.itemIndex?.entries!==state.entries) state.itemIndex={entries:state.entries,byId:new Map(state.entries.map(item=>[key(item),item]))};
+  return state.nodes.find(value=>key(value)===id) || state.itemIndex.byId.get(id) ||
     state.selection?.family?.graph?.nodes.find(value=>key(value)===id) ||
     (state.selection && key(state.selection.item)===id ? state.selection.item : null);
 }
 function readingContent(item, compact=false) {
+  if(item.lexical) {
+    const row=item.lexical.record;
+    // The source labels these representations. Never relabel phonemic or
+    // publisher-specific transcription as IPA or machine-generated romanisation.
+    const names=(row.Transcriptions || "").split(";").slice(1);
+    const values=(row.AlternativeValues || "").split(";").map((value,i)=>({value,label:names[i]})).filter(item=>item.value);
+    return values.slice(0,compact ? 1:values.length).map(({value,label})=>'<span class="reading-line"><span class="reading-kind">'+esc(label || "Source alt.")+'</span> <span>'+esc(value)+'</span></span>').join("");
+  }
   const ipa=item.ipa || [];
   const rows=(item.transliteration ? '<span class="reading-line"><span class="reading-kind">Roman.</span> <span>'+esc(item.transliteration)+'</span></span>' : '')+
     (compact ? ipa.slice(0,1) : ipa).map(value=>'<span class="reading-line"><span class="reading-kind">IPA</span> <span>'+esc(value.text)+(value.qualifier ? ' <span class="reading-qualifier">('+esc(value.qualifier)+')</span>':'')+'</span></span>').join("");
@@ -200,6 +215,7 @@ function refreshReadings(item) {
 }
 async function loadReading(item) {
   item=currentItem(item);
+  if(item.lexical) return;
   if(item.readingStatus === "loading" || item.readingStatus === "loaded") return;
   const revision=state.search;
   item.readingStatus="loading"; refreshReadings(item);
@@ -223,10 +239,10 @@ function popup(item) {
   const meta=LANGUAGES[item.code] || {};
   const node=document.createElement("div");
   node.className="etymon-popup";
-  node.innerHTML='<div class="popup-lang">'+esc(languageName(item.code))+'</div><a class="popup-word" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">'+esc(display(item))+'</a>'+
+  node.innerHTML='<div class="popup-lang">'+esc(languageName(item.code))+'</div><a class="popup-word" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer">'+esc(display(item))+'</a>'+
     readings(item)+
     '<p>'+esc(meta.region || meta.locationSource || "Representative location")+' · '+esc(periodLabel(item.code))+'</p>'+
-    '<a class="popup-action" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer">Open Wiktionary entry ↗</a><p>'+resourceLinks(item.code)+'</p>';
+    '<a class="popup-action" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer">Open '+esc(entrySource(item))+' source ↗</a><p>'+resourceLinks(item.code)+'</p>';
   return node;
 }
 function wordLabel(item,onSelect=()=>selectWord(currentItem(item))) {
@@ -234,8 +250,8 @@ function wordLabel(item,onSelect=()=>selectWord(currentItem(item))) {
   node.className="word-chip";
   node.style.setProperty("--chip",color(item));
   node.innerHTML='<button type="button" class="map-word-select" aria-label="Explore '+esc(display(item)+' · '+languageName(item.code))+'"><b>'+esc(display(item))+'</b></button>'+readings(item,true)+
-    '<small>'+esc(languageName(item.code))+' <a href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item))+' in Wiktionary">↗</a></small>';
-  node.title=display(item)+" · "+languageName(item.code)+" · Explore etymology";
+    '<small>'+esc(languageName(item.code))+' <a href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item))+' in '+esc(entrySource(item))+'">↗</a></small>';
+  node.title=display(item)+" · "+languageName(item.code)+" · "+entrySource(item);
   node.querySelector("button").addEventListener("click",onSelect);
   node.addEventListener("click",e=>e.stopPropagation());
   return node;
@@ -275,7 +291,7 @@ function appendClusterWords(record) {
     const item=currentItem(entry), row=document.createElement("li");
     row.style.setProperty("--chip",color(item));
     row.innerHTML='<button type="button" class="stack-word" data-stack-word="'+esc(key(item))+'"><b>'+esc(display(item))+'</b><small>'+esc(languageName(item.code))+'</small></button>'+readings(item,true)+
-      '<a class="stack-wiki" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in Wiktionary">↗</a>';
+      '<a class="stack-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in '+esc(entrySource(item))+'">↗</a>';
     fragment.append(row);
   }
   record.stack.querySelector("ol").append(fragment);
@@ -346,10 +362,22 @@ function bindCluster(record) {
 function renderGeography() {
   if(!state.map || state.mode!=="compare") return;
   const bounds=state.map.getBounds().pad(.3);
-  const entries=visible(state.entries).filter(i=>LANGUAGES[i.code]?.point && bounds.contains(pointOnMap(LANGUAGES[i.code].point)));
-  const projected=entries.map(item=>({item, point:state.map.project(pointOnMap(LANGUAGES[item.code].point))}));
   const layout=labelLayout(state.map.getZoom());
-  const groups=clusterPoints(projected, layout.radius);
+  const anchor=Math.round(state.map.getCenter().lng/180)*180;
+  const signature=JSON.stringify([state.map.getZoom(),period(),anchor]);
+  if(state.clusterLayout?.entries!==state.entries || state.clusterLayout.signature!==signature) {
+    // Cluster once per zoom/data/period, not per pan. Membership no longer jumps
+    // when a nearby word crosses the viewport edge; existing markers can stay put.
+    const projected=visible(state.entries).filter(i=>LANGUAGES[i.code]?.point).map(item=>{
+      const [lat,lon]=LANGUAGES[item.code].point;
+      return {item,point:state.map.project([lat,lon+360*Math.round((anchor-lon)/360)])};
+    });
+    state.clusterLayout={entries:state.entries,signature,groups:layoutClusters(projected,layout)};
+  }
+  const groups=state.clusterLayout.groups.filter(group=>{
+    const location=state.map.unproject(group.point);
+    return bounds.contains(pointOnMap([location.lat,location.lng]));
+  });
   const retained=new Set();
   for(const group of groups) {
     const items=group.items;
@@ -371,14 +399,15 @@ function renderGeography() {
     }
     record.items=items;
     record.representative=representative;
-    const position=items.length===1 ? pointOnMap(LANGUAGES[items[0].code].point):state.map.unproject(group.point);
+    const centre=state.map.unproject(group.point);
+    const position=items.length===1 ? pointOnMap(LANGUAGES[items[0].code].point):pointOnMap([centre.lat,centre.lng]);
     if(!record.marker.getLatLng().equals(position)) record.marker.setLatLng(position);
     const signature=JSON.stringify([key(representative),color(representative),representative.transliteration,representative.ipa]);
     if(record.signature!==signature) {
       if(record.element) {
         const a=record.element.querySelector(".cluster-word"), button=record.element.querySelector(".cluster-more");
         a.textContent=display(representative);
-        a.title=display(representative)+" · "+languageName(representative.code)+" · explore etymology";
+        a.title=display(representative)+" · "+languageName(representative.code)+" · "+entrySource(representative);
         a.setAttribute("aria-label","Explore "+display(representative)+" · "+languageName(representative.code));
         button.textContent="+"+(items.length-1);
         button.setAttribute("aria-label","Show "+(items.length-1)+" more forms near "+languageName(representative.code));
@@ -422,7 +451,7 @@ function entryRows(items) {
     return '<div class="entry-row" style="--entry-color:'+color(item)+'"><i class="entry-dot"></i><div class="entry-main"><button type="button" class="entry-link" data-select-word="'+esc(key(item))+'" aria-pressed="'+Boolean(state.selection && key(state.selection.item)===key(item))+'"><b>'+esc(display(item))+'</b><span>'+esc(languageName(item.code))+'</span></button>'+readings(item)+'<div class="entry-meta">'+
       (meta.historical ? esc(meta.era || "Historical / extinct")+' · ':'')+
       (!meta.point ? "Location unavailable · ":"")+
-      wals+'</div></div><a class="entry-wiki" href="'+esc(wiktionaryUrl(item.term,item.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in Wiktionary" title="Open Wiktionary">↗</a>'+
+      (item.lexical ? '<span class="source-badge">'+esc(entrySource(item))+'</span> · ':'')+wals+'</div></div><a class="entry-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in '+esc(entrySource(item))+'" title="Open '+esc(entrySource(item))+'">↗</a>'+
       (meta.point ? '<button class="locate-button" type="button" data-entry="'+esc(key(item))+'" aria-label="Locate '+esc(languageName(item.code)+' '+display(item))+'">'+locateIcon+'</button>':'')+'</div>';
   }).join("");
 }
@@ -450,10 +479,11 @@ function renderStory() {
   const excluded=state.entries.length-visible(state.entries).length;
   $("#map-kicker").textContent=state.region ? "NEARBY LANGUAGES":"LANGUAGES, WITHOUT BORDERS";
   $("#map-title").textContent='How we say “'+state.concept+'”';
-  $("#story-content").innerHTML='<div class="stat-row"><div class="stat"><b>'+languages.size+'</b><span>languages</span></div><div class="stat"><b>'+items.length+'</b><span>word forms</span></div><div class="stat"><b>'+located.length+'</b><span>mapped forms</span></div></div>'+
+  $("#story-content").innerHTML='<div class="stat-row"><div class="stat"><b>'+languages.size+'</b><span>'+(state.lexicalConcept ? 'varieties':'languages')+'</span></div><div class="stat"><b>'+items.length+'</b><span>word forms</span></div><div class="stat"><b>'+located.length+'</b><span>mapped forms</span></div></div>'+
     (excluded ? '<p class="source-caveat">'+excluded+' forms outside this period or undated. Reset the time range to see all '+state.entries.length+' forms.</p>':'')+
     (p.to<PRESENT ? '<p class="source-caveat">Historical points are approximate. Contemporary speaker territories are hidden for this period.</p>':'')+
-    '<div class="legend-title">Words &amp; language profiles</div><p class="source-caveat">Zoom in for map readings. Select a location or Get pronunciation to load generated IPA.</p><input id="entry-filter" class="entry-filter" type="search" placeholder="Find a language or form…" aria-label="Filter result languages and words" value="'+esc(state.entryQuery)+'" /><div id="entry-list"></div>'+
+    (state.lexicalConcept ? '<p class="source-caveat"><span class="source-badge">'+esc(state.lexicalConcept.dataset.toUpperCase())+'</span> Exact source meaning: '+esc(state.lexicalConcept.name)+'. Counts are dictionary varieties and records, not additional unique languages. Grey means lexical evidence only.</p>' : '')+
+    '<div class="legend-title">Words &amp; language profiles</div><p class="source-caveat">'+(state.lexicalConcept ? 'Select a form for its original value, annotations, and dictionary credits. Transcription labels follow the source.' : 'Zoom in for map readings. Select a location or Get pronunciation to load generated IPA.')+'</p><input id="entry-filter" class="entry-filter" type="search" placeholder="Find a language or form…" aria-label="Filter result languages and words" value="'+esc(state.entryQuery)+'" /><div id="entry-list"></div>'+
     '<details><summary>Etymological source colours</summary><ul class="cluster-list">'+[...clusters.values()].sort((a,b)=>b.count-a.count).map(c=>'<li style="--color:'+c.color+'"><i></i><b>'+esc(c.label)+'</b><small>'+c.count+'</small></li>').join("")+'</ul><p class="source-caveat">The first explicit source template in each entry determines its group. Matching colours suggest a shared source; they are not a complete cognacy analysis.</p></details>';
   renderEntryList();
 }
@@ -474,9 +504,13 @@ async function renderAreas() {
   const bounds=state.map.getBounds().pad(.2);
   const entries=visible(state.entries).filter(i=>{
     const meta=LANGUAGES[i.code];
-    return meta?.glottocode && !meta.historical && meta.point && bounds.contains(pointOnMap(meta.point));
+    return meta?.glottocode && !meta.historical && (!i.lexical || meta.contemporary) && meta.point && bounds.contains(pointOnMap(meta.point));
   });
-  const unique=[...new Map(entries.map(i=>[LANGUAGES[i.code].glottocode,i])).values()];
+  const candidates=[...new Map(entries.map(i=>[LANGUAGES[i.code].glottocode,i])).values()];
+  const centre=state.map.getCenter();
+  candidates.sort((a,b)=>state.map.distance(centre,pointOnMap(LANGUAGES[a.code].point))-state.map.distance(centre,pointOnMap(LANGUAGES[b.code].point)));
+  const unique=candidates.slice(0,48);
+  state.territoryTotal=candidates.length;
   const wanted=new Set(unique.map(i=>LANGUAGES[i.code].glottocode));
   for(const [code,record] of state.areaCache) {
     if(!wanted.has(code)) state.areas.removeLayer(record.layer);
@@ -491,13 +525,16 @@ async function renderAreas() {
         if(!record) {
           const feature=await loadSpeakerArea(code);
           if(!feature || revision!==state.areaRevision) continue;
+          // Let pointer/keyboard work run between geometry constructions.
+          await new Promise(resolve=>setTimeout(resolve,0));
+          if(revision!==state.areaRevision || state.moving) continue;
           const layer=L.geoJSON(feature,{renderer:state.areaRenderer,pane:"territories",interactive:false,style:{color:color(item),weight:1,fillColor:color(item),fillOpacity:.15}});
           record={layer,color:color(item)};
           state.areaCache.set(code,record);
         }
         if(record.color!==color(item)) {record.layer.setStyle({color:color(item),fillColor:color(item)});record.color=color(item);}
         if(!state.areas.hasLayer(record.layer)) state.areas.addLayer(record.layer);
-        // Refresh recency; inactive rendered geometry is bounded, decoded data remains cached.
+        // Both rendered and decoded geometry have bounded caches.
         state.areaCache.delete(code);state.areaCache.set(code,record);
       } catch { failures++; }
     }
@@ -513,9 +550,11 @@ async function renderAreas() {
 }
 function updateCaption(areas=0) {
   $("#map-caption-text").textContent=(state.mode==="journey" ? (state.journeyKind==="family" ? "Word family · "+(state.selection?.family?.item.term || "") : "Etymology · "+(state.selection?.item.term || "")) : areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
+  if(areas && state.territoryTotal>48) $("#map-caption-text").textContent+=" · zoom in for more areas";
 }
 
 function startSearch() {
+  clearTimeout(state.messageTimer);$("#map-message").classList.add("hidden");
   closeSelection();
   state.mapSnapshot=null;
   state.controller?.abort();
@@ -526,6 +565,72 @@ function startSearch() {
   return {revision:state.search,signal:state.controller.signal};
 }
 function pending(items) { return items.map(i=>({...i,source:"unresolved",sourceName:"Etymology not loaded"})); }
+function renderDictionaryChoices() {
+  const target=$("#dictionary-matches");
+  if(!state.lexicalIndex) return;
+  const matches=matchConcepts(state.lexicalIndex.concepts,$("#dictionary-query").value,$("#dictionary-source").value);
+  $("#dictionary-count").textContent=matches.length+" meanings";
+  target.innerHTML=matches.slice(0,state.lexicalLimit).map(concept=>'<button type="button" class="dictionary-choice" data-dictionary-concept="'+esc(concept.dataset+":"+concept.localId)+'"><span>'+esc(concept.name)+'</span><small>'+esc(concept.dataset.toUpperCase())+' · '+concept.varieties+' varieties · '+concept.forms+' forms</small></button>').join("") || '<p class="source-caveat">No indexed meanings match. Try a shorter gloss, or search Wiktionary above.</p>';
+  if(matches.length>state.lexicalLimit) target.innerHTML+='<button type="button" class="more-entries" id="more-dictionary-meanings">Show more meanings · '+(matches.length-state.lexicalLimit)+' left</button>';
+}
+async function initDictionaries() {
+  try {
+    const index=await loadLexicalIndex();
+    state.lexicalIndex=index;
+    registerLexicalLanguages(index.datasets);
+    const count=Object.values(index.datasets).reduce((sum,d)=>sum+d.stats.forms,0);
+    $("#dictionary-summary").textContent=count.toLocaleString()+" sourced records · IDS + WOLD";
+    renderDictionaryChoices();
+  } catch {
+    $("#dictionary-matches").innerHTML='<p class="source-caveat">Dictionary index unavailable. Wiktionary still works.</p><button type="button" id="retry-dictionaries" class="more-entries">Retry dictionaries</button>';
+  }
+}
+async function selectDictionaryConcept(id) {
+  const concept=state.lexicalIndex?.concepts.find(c=>c.dataset+":"+c.localId===id);
+  if(!concept) return;
+  const {revision,signal}=startSearch();
+  state.entries=[];state.senses=[];state.lexicalConcept=concept;state.concept=concept.name;state.entryLimit=60;
+  $("#sense-field").classList.add("hidden");
+  renderComparison();status("Loading "+concept.dataset.toUpperCase()+" · "+concept.name+"…","loading");
+  try {
+    const entries=await loadLexicalConcept(concept,{signal});
+    if(revision!==state.search) return;
+    state.entries=entries;
+    renderComparison();fitItems(visible(entries),5);
+    status(concept.dataset.toUpperCase()+" · "+concept.varieties+" dictionary varieties");
+    $("#dictionary-browser").open=false;
+  } catch(error) {
+    if(revision!==state.search || signal.aborted) return;
+    status("Dictionary meaning unavailable","error");message(error.message);
+    $("#dictionary-browser").open=true;
+  }
+}
+
+function renderLexicalSelection(item) {
+  const {dataset,record,concept}=item.lexical;
+  const source=state.lexicalIndex.datasets[dataset], language=LANGUAGES[item.code];
+  const detail=(label,value)=>value ? '<dt>'+esc(label)+'</dt><dd>'+esc(value)+'</dd>' : '';
+  const fields=[
+    ["Meaning",concept.name],["Source form",record.Form],["Original value",record.Value],
+    ["Source representation",record.Transcriptions?.split(";")[0] || language.representations?.split(";")[0]],
+    ["Original script",record.original_script],["Comment",record.Comment],["Form note",record.comment_on_word_form],
+    ["Borrowing assessment",record.Borrowed],["Borrowing note",record.comment_on_borrowed],
+    ["Etymological note",record.etymological_note],["Loan history",record.loan_history],
+    ["Gloss",record.gloss],["Reference",record.reference],["Record date (not word age)",language.date],
+    ["Dictionary authors",language.authors],["Consultants",language.consultants],["Data entry",language.dataEntry],
+    ["Language identifier",language.glottocode],["Location",language.locationSource],
+    ["CLDF record",record.ID],["Word-level source IDs",record.Source || "Not supplied; dictionary-level attribution only"]
+  ];
+  if((record.Source || "").split(";").some(id=>source.emptyBibliography?.includes(id.split("[")[0].trim()))) fields.push(["Bibliography limitation","This release has an empty bibliography record for a cited ID. Consult the linked vocabulary and its contributors."]);
+  return '<div class="selection-heading"><div><p class="selection-kicker">'+esc(language.name)+' · '+esc(dataset.toUpperCase())+'</p><h2 id="word-detail-title" tabindex="-1">'+esc(display(item))+'</h2></div><button type="button" class="icon-button" id="close-word-detail" aria-label="Close word details">×</button></div>'+
+    '<a class="selection-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer">Open '+esc(dataset.toUpperCase())+' source '+(dataset==="ids" ? 'meaning':'word')+' ↗</a>'+readings(item)+
+    '<p class="source-caveat">Lexical evidence, not a verified Wiktionary match. No cognacy or donor arrows are inferred. Source transcriptions are not automatically IPA; locations describe the variety, not the word’s age.</p>'+
+    '<dl class="lexical-details">'+fields.map(([label,value])=>detail(label,value)).join("")+'</dl>'+
+    '<details class="source-record"><summary>All original CLDF fields</summary><pre>'+esc(JSON.stringify(record,null,2))+'</pre></details>'+
+    '<div class="source-links"><a href="'+esc(language.url)+'" target="_blank" rel="noreferrer">Dictionary &amp; contributors ↗</a>'+ (concept.concepticon ? '<a href="https://concepticon.clld.org/parameters/'+esc(concept.concepticon)+'" target="_blank" rel="noreferrer">Concepticon definition ↗</a>' : '')+
+    '<a href="./data/lexicon/'+esc(dataset)+'/sources.bib" target="_blank">Source bibliography ↗</a><a href="'+esc(source.doi)+'" target="_blank" rel="noreferrer">'+esc(source.version)+' release ↗</a></div>'+
+    '<p class="source-caveat">'+esc(source.citation)+' <a href="'+esc(source.license)+'" target="_blank" rel="noreferrer">CC BY 4.0</a>. Imported as source-specific records; original annotations are retained.</p>';
+}
 async function enrichAll(revision,signal) {
   const queue=[...state.entries];
   for(let offset=0;offset<queue.length;offset+=40) {
@@ -549,7 +654,8 @@ async function loadComparison(concept) {
   const clean=concept.trim();
   if(!clean) return;
   const {revision,signal}=startSearch();
-  state.entries=[]; state.concept=clean; state.senses=[];
+  state.entries=[]; state.concept=clean; state.senses=[]; state.lexicalConcept=null;
+  $("#dictionary-query").value=clean;state.lexicalLimit=12;renderDictionaryChoices();
   $("#sense-field").classList.add("hidden");
   renderComparison(); status("Reading Wiktionary…","loading");
   try {
@@ -583,6 +689,7 @@ async function changeSense() {
   const sense=state.senses[+$("#sense-select").value];
   if(!sense) return;
   const {revision,signal}=startSearch();
+  state.lexicalConcept=null;
   state.entries=pending(sense.entries);
   renderComparison(); fitItems(visible(state.entries),5);
   try { await enrichAll(revision,signal); }
@@ -628,6 +735,7 @@ function renderSelection() {
   panel.classList.toggle("hidden",!selection);
   if(!selection) { panel.innerHTML=""; return; }
   const item=selection.item;
+  if(item.lexical) {panel.innerHTML=renderLexicalSelection(item);return;}
   const shown=new Set(visible(state.nodes));
   const mapped=state.nodes.filter(node=>shown.has(node) && node.point);
   panel.innerHTML='<div class="selection-heading"><div><p class="selection-kicker">'+esc(languageName(item.code))+' · WORD ETYMOLOGY</p><h2 id="word-detail-title" tabindex="-1">'+esc(display(item))+'</h2></div><button type="button" class="icon-button" id="close-word-detail" aria-label="Close word details">×</button></div>'+
@@ -778,8 +886,10 @@ async function selectWord(item,{retry=false}={}) {
   state.selectionController=controller;
   const selection={item:{...item},status:"loading"};
   state.selection=selection; state.nodes=[];
+  if(item.lexical) selection.status="ready";
   renderSelection(); revealSelection();
   for(const button of document.querySelectorAll("[data-select-word]")) button.setAttribute("aria-pressed",String(button.dataset.selectWord===key(item)));
+  if(item.lexical) return;
   try {
     const title=item.term.startsWith("*") ? "Reconstruction:"+(LANGUAGES[item.code]?.wiktionaryName || languageName(item.code))+"/"+item.term.slice(1) : item.term;
     let page=state.selectionPages.get(title);
@@ -861,6 +971,13 @@ function bindEvents() {
   });
   syncThemeButton();
   let themeChosen=false;
+  try {$("#lightweight-toggle").checked=localStorage.getItem("etymap-lightweight")==="true";} catch { /* optional storage */ }
+  const applyLightweight=()=>document.documentElement.classList.toggle("lightweight-glass",$("#lightweight-toggle").checked);
+  applyLightweight();
+  $("#lightweight-toggle").addEventListener("change",()=>{
+    applyLightweight();
+    try {localStorage.setItem("etymap-lightweight",String($("#lightweight-toggle").checked));} catch { /* session preference remains */ }
+  });
   try { themeChosen=Boolean(localStorage.getItem("etymap-theme")); } catch { /* optional storage */ }
   $("#theme-toggle").addEventListener("click",()=>{
     themeChosen=true;
@@ -871,6 +988,14 @@ function bindEvents() {
     if(!themeChosen) setTheme(event.matches ? "night":"day");
   });
   $("#compare-form").addEventListener("submit",e=>{e.preventDefault();loadComparison($("#concept-input").value);});
+  $("#dictionary-query").addEventListener("input",()=>{state.lexicalLimit=12;renderDictionaryChoices();});
+  $("#dictionary-source").addEventListener("change",()=>{state.lexicalLimit=12;renderDictionaryChoices();});
+  $("#dictionary-matches").addEventListener("click",event=>{
+    const choice=event.target.closest("[data-dictionary-concept]");
+    if(choice) selectDictionaryConcept(choice.dataset.dictionaryConcept);
+    else if(event.target.closest("#more-dictionary-meanings")) {state.lexicalLimit+=24;renderDictionaryChoices();}
+    else if(event.target.closest("#retry-dictionaries")) initDictionaries();
+  });
   $("#journey-form").addEventListener("submit",e=>{e.preventDefault();loadJourney($("#word-input").value,resolveLanguage($("#language-input").value));});
   document.querySelectorAll("[data-example]").forEach(b=>b.addEventListener("click",()=>{$("#concept-input").value=b.dataset.example;loadComparison(b.dataset.example);}));
   document.querySelectorAll("[data-word]").forEach(b=>b.addEventListener("click",()=>{$("#word-input").value=b.dataset.word;$("#language-input").value=languageName(b.dataset.language);loadJourney(b.dataset.word,b.dataset.language);}));
@@ -885,10 +1010,14 @@ function bindEvents() {
   $("#labels-toggle").addEventListener("change",applyBasemapOptions); $("#borders-toggle").addEventListener("change",applyBasemapOptions);
   $("#relief-toggle").addEventListener("change",()=>{state.reliefError=false;applyBasemapOptions();});
   $("#speaker-toggle").addEventListener("change",scheduleAreas);
-  $("#time-from").addEventListener("input",()=>updatePeriod("from")); $("#time-to").addEventListener("input",()=>updatePeriod("to"));
+  const schedulePeriod=changed=>{cancelAnimationFrame(state.periodFrame);state.periodFrame=requestAnimationFrame(()=>{state.periodFrame=null;updatePeriod(changed);});};
+  $("#time-from").addEventListener("input",()=>schedulePeriod("from")); $("#time-to").addEventListener("input",()=>schedulePeriod("to"));
   $("#undated-toggle").addEventListener("change",()=>updatePeriod());
   $("#reset-time").addEventListener("click",()=>{$("#time-from").value=String(EARLIEST);$("#time-to").value=String(PRESENT);updatePeriod();});
-  $("#story-content").addEventListener("input",event=>{if(event.target.id==="entry-filter"){state.entryQuery=event.target.value;renderEntryList();}});
+  $("#story-content").addEventListener("input",event=>{if(event.target.id==="entry-filter"){
+    state.entryQuery=event.target.value;
+    if(!state.listFrame) state.listFrame=requestAnimationFrame(()=>{state.listFrame=null;renderEntryList();});
+  }});
   $("#story-content").addEventListener("click",event=>{
     if(event.target.closest("#more-entries")) { state.entryLimit+=60; renderEntryList(); return; }
     const selected=event.target.closest("[data-select-word]");
@@ -926,6 +1055,7 @@ async function start() {
     $("#language-list").innerHTML=Object.entries(LANGUAGES).filter(([code])=>!code.includes("_")).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([code,m])=>'<option value="'+esc(m.name)+'">'+esc(code+(m.historical ? " · historical":""))+'</option>').join("");
     $("#language-input").placeholder="Search "+count.toLocaleString()+" languages…";
   } catch { message("The full language catalogue could not load. Core languages are available; reload to retry."); }
+  initDictionaries();
   updatePeriod();
   if(state.search===0) loadComparison("water");
   await mapReady;

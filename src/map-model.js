@@ -42,11 +42,48 @@ export function clusterPoints(projected, radius = 75) {
     let best, distance=Infinity, bestKey="";
     for(const member of group.members) {
       const d=(member.point.x-group.point.x)**2+(member.point.y-group.point.y)**2;
-      const id=member.item.code+":"+member.item.term;
+      const id=member.item.id || member.item.code+":"+member.item.term;
       if(d<distance || (d===distance && id<bestKey)) {best=member.item;distance=d;bestKey=id;}
     }
     group.representative=best;
     delete group.members;
+  }
+  return groups;
+}
+
+export function labelBounds(group,layout) {
+  // Single tooltips sit to the right of their dot; cluster cards are centred.
+  const left=group.point.x+(group.items.length===1 ? 14 : -layout.width/2);
+  return {left,right:left+layout.width,top:group.point.y-layout.height/2,bottom:group.point.y+layout.height/2};
+}
+
+export function layoutClusters(projected,layout) {
+  const groups=clusterPoints(projected,layout.radius);
+  const positions=new Map(projected.map(member=>[member.item,member.point]));
+  // Only on layout changes, never pan. Merge collisions into +x stacks rather
+  // than hiding forms. Each pass removes a group, so this always terminates.
+  let changed=true;
+  while(changed) {
+    changed=false;
+    outer: for(let i=0;i<groups.length;i++) {
+      const a=labelBounds(groups[i],layout);
+      for(let j=i+1;j<groups.length;j++) {
+        const b=labelBounds(groups[j],layout);
+        if(a.left<b.right+6 && a.right+6>b.left && a.top<b.bottom+6 && a.bottom+6>b.top) {
+          const target=groups[i],other=groups[j],n=target.items.length,m=other.items.length;
+          target.point={x:(target.point.x*n+other.point.x*m)/(n+m),y:(target.point.y*n+other.point.y*m)/(n+m)};
+          target.items.push(...other.items);groups.splice(j,1);changed=true;break outer;
+        }
+      }
+    }
+  }
+  for(const group of groups) {
+    let best,distance=Infinity,id="";
+    for(const item of group.items) {
+      const p=positions.get(item),d=(p.x-group.point.x)**2+(p.y-group.point.y)**2,k=item.id || item.code+":"+item.term;
+      if(d<distance || (d===distance && k<id)) {best=item;distance=d;id=k;}
+    }
+    group.representative=best;
   }
   return groups;
 }

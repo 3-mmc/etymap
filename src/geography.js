@@ -6,6 +6,7 @@ const SPEAKER_AREA_INDEX_URL = new URL("../data/speaker-areas/index.json", impor
 let glottologPromise;
 let speakerAreaIndexPromise;
 const speakerAreaCache = new Map();
+const SPEAKER_CACHE_LIMIT = 80;
 
 export function parseCSVLine(line) {
   const cells = [];
@@ -137,7 +138,10 @@ export async function loadSpeakerArea(glottocode) {
       return new Response(decompressed).json();
     })().catch((error) => { speakerAreaCache.delete(glottocode); throw error; }));
   }
-  return speakerAreaCache.get(glottocode);
+  const promise=speakerAreaCache.get(glottocode);
+  speakerAreaCache.delete(glottocode);speakerAreaCache.set(glottocode,promise);
+  while(speakerAreaCache.size>SPEAKER_CACHE_LIMIT) speakerAreaCache.delete(speakerAreaCache.keys().next().value);
+  return promise;
 }
 
 export function featureName(feature) {

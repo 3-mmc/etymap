@@ -1,6 +1,6 @@
 # Adding lexical sources
 
-Research checked 2026-09-06. These sources are candidates, **not currently imported**. The production app still uses Wiktionary for word forms and etymologies.
+Research checked 2026-09-06; implementation updated 2026-09-07. **IDS v4.3 and WOLD v4.2 are now imported in the local project**, with separate source-specific meaning selection. See [imported sources, counts, licenses, and limitations](LEXICAL_SOURCES.md). Other sources below remain candidates; they have not been imported. Wiktionary still supplies the relationship explorer.
 
 ## Recommended order
 
@@ -20,4 +20,4 @@ Research checked 2026-09-06. These sources are candidates, **not currently impor
 - Build compressed, per-concept shards offline and load only the selected concept. Avoid making pan, zoom, hover, or initial page load download whole dictionaries. A source filter and visible provenance badges should accompany the first import.
 - Respect access restrictions and community conditions for any future community dictionary or archive. Public readability alone does not authorize republication.
 
-A bounded first pilot would import a small set of clearly matched basic concepts, measure the gain over Wiktionary, and verify minority-language identifiers, source links, and transcriptions before expanding to a full collection.
+The initial implementation imports the full pinned IDS and WOLD releases, but keeps their meanings separate from Wiktionary and each other. It preserves all nonempty original fields, scoped record/variety IDs, attribution, and source links. Further work can add reviewed concept alignment and additional individually licensed collections; no net-new-language claim is made by adding dataset counts together.

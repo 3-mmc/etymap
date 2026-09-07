@@ -52,10 +52,10 @@ function linkedForm(anchor) {
   let name;
   try { name=reconstructed?.[1] || decodeURIComponent(url.hash.slice(1)).replaceAll("_"," "); } catch { return null; }
   if(name) {
-    const exact=Object.entries(LANGUAGES).find(([key,meta])=>!key.includes("_") && (meta.wiktionaryName || meta.name)===name);
+    const exact=Object.entries(LANGUAGES).find(([key,meta])=>!key.includes("_") && !meta.lexicalDataset && (meta.wiktionaryName || meta.name)===name);
     if(exact) code=exact[0];
   }
-  if(!LANGUAGES[code]) return null;
+  if(!LANGUAGES[code] || LANGUAGES[code].lexicalDataset) return null;
   if(reconstructed) term="*"+reconstructed[2];
   return {code,term,display:anchor.textContent.trim(),url:wiktionaryUrl(term,code),missing:anchor.classList.contains("new"),point:LANGUAGES[code]?.point};
 }

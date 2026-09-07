@@ -1,0 +1,28 @@
+{
+  "id": "ids",
+  "label": "Intercontinental Dictionary Series",
+  "repo": "intercontinental-dictionary-series/ids",
+  "version": "v4.3",
+  "commit": "4a8810a09b064a42327b884492e7f7ef827add19",
+  "doi": "https://doi.org/10.5281/zenodo.7701635",
+  "hashes": {
+    "cldf/cldf-metadata.json": "a038906d31f028d544680f6c85be5273b94c656a1485fb713b4df3345c0c82d2",
+    "cldf/languages.csv": "13f64e0ef81488dc22c3c6e7b855922b070537622112acf24a9ed19812e28dfd",
+    "cldf/parameters.csv": "5eee0676fbea15c7b0a25e52d321a31cc0f23cd6aab68aeb9e51c10be9b976ff",
+    "cldf/sources.bib": "be04eaf3f90a4b78aa66fcf95ef08c9404e6043727aaec98202a79721b7e4ffa",
+    "LICENSE": "945fbcb37deca05bccd7c3ca0e261679f1f5373515504fdbad68f6f3cf6f49b9",
+    "cldf/forms.csv": "1ff6caa439d27d05c0ce7e72b656bfae5595bc5d12ae57b494e481e90e4e9968"
+  },
+  "stats": {
+    "input": 437902,
+    "forms": 437902,
+    "skipped": 0,
+    "withoutWordCitation": 352262,
+    "varieties": 319,
+    "locatedVarieties": 277,
+    "glottocodes": 269,
+    "concepts": 1310,
+    "compressedBytes": 10216288,
+    "maxShardBytes": 14983
+  }
+}
