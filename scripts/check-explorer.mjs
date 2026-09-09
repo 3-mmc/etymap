@@ -72,7 +72,7 @@ try {
   assert.ok(await page.locator('#show-etymology-map').isDisabled());
   assert.match(await page.locator('#word-detail').innerText(),/No supported explicit source/);
   await page.locator('#close-word-detail').click();
-  await page.locator('.direct-search summary').click();
+  await page.locator('.direct-search:has(#journey-form) summary').click();
   await page.locator('[data-language="sux"]').click();
   await page.waitForFunction(()=>__state.selection?.status==="ready");
   assert.equal(await page.evaluate(()=>__state.selection.item.code),"sux");

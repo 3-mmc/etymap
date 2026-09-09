@@ -57,6 +57,22 @@ export function labelBounds(group,layout) {
   return {left,right:left+layout.width,top:group.point.y-layout.height/2,bottom:group.point.y+layout.height/2};
 }
 
+// Family points/arrows must stay at their geographic anchors. Declutter labels
+// without moving or merging graph nodes; hidden labels remain interactive.
+export function placeFamilyLabels(projected,layout,viewport) {
+  const placed=new Map(),boxes=[];
+  for(const {item,point} of projected) {
+    for(const direction of ["right","left"]) {
+      const left=direction==="right" ? point.x+22 : point.x-22-layout.width;
+      const box={left,right:left+layout.width,top:point.y-layout.height/2-6,bottom:point.y+layout.height/2+6};
+      if(viewport && (box.left<viewport.left || box.right>viewport.right || box.top<viewport.top || box.bottom>viewport.bottom)) continue;
+      if(boxes.some(b=>box.left<b.right+8 && box.right+8>b.left && box.top<b.bottom+8 && box.bottom+8>b.top)) continue;
+      placed.set(item,direction);boxes.push(box);break;
+    }
+  }
+  return placed;
+}
+
 export function layoutClusters(projected,layout) {
   const groups=clusterPoints(projected,layout.radius);
   const positions=new Map(projected.map(member=>[member.item,member.point]));

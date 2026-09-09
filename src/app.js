@@ -2,11 +2,13 @@ import { LANGUAGES, TYPE_LABELS, languageName, wiktionaryUrl } from "./data.js";
 import { loadSpeakerArea } from "./geography.js";
 import { EARLIEST, PRESENT, formatYear, inPeriod, loadLanguageCatalog, periodLabel, resolveLanguage } from "./languages.js";
 import { buildJourney, enrichTranslations, fetchWikitext, getLanguageSection, parseTranslationSenses } from "./wiktionary.js";
-import { layoutClusters, colourForSource, prepareBasemap, nightPaint, labelLayout } from "./map-model.js";
+import { layoutClusters, colourForSource, prepareBasemap, labelLayout, placeFamilyLabels } from "./map-model.js";
+import { MAP_VIEWS, viewBasemap } from "./map-views.js";
 import { fetchPronunciation, fetchRenderedEntry } from "./pronunciation.js";
 import { parseRenderedFamily, familyGraph, familyTitle } from "./family.js";
 import { COVERAGE_DATE, SUGGESTED_WORDS } from "./suggestions.js";
-import { entryKey, entryUrl, entrySource, loadLexicalIndex, loadLexicalConcept, registerLexicalLanguages, matchConcepts } from "./lexical.js";
+import { entryKey, entryUrl, entrySource, conceptKey, combinedEntries, loadLexicalIndex, loadLexicalConcept, registerLexicalLanguages, matchConcepts } from "./lexical.js";
+import { PROTO_EXAMPLES, isReconstructed, protoWord, protoGraph } from "./proto.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
@@ -19,13 +21,15 @@ const state = {
   openCluster:null, stackSequence:0,
   journeyKind:"etymology",
   reliefError:false,
-  lexicalIndex:null, lexicalConcept:null, lexicalLimit:12, itemIndex:null, clusterLayout:null,
+  lexicalIndex:null, lexicalLimit:12, itemIndex:null, clusterLayout:null,
+  wikiEntries:[], dictionaryLayers:new Map(), mapView:"relief", appliedStyle:null, protoSequence:0,
   periodFrame:null, listFrame:null, territoryTotal:0,
   theme:document.documentElement.dataset.theme === "night" ? "night":"day"
 };
 const esc = (value = "") => String(value).replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[c]);
 const key = entryKey;
 const display = (item) => item.display || item.term;
+const mapSource = item => item.lexical ? entrySource(item) : "Wikt.";
 const locateIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 4 13 21l-3-7-7-3Z"/></svg>';
 const period = () => ({from:+$("#time-from").value, to:+$("#time-to").value, undated:$("#undated-toggle").checked});
 const visible = (items) => { const p=period(); return items.filter((i) => inPeriod(i.code,p.from,p.to,p.undated)); };
@@ -61,11 +65,17 @@ function applyBasemapOptions() {
   const gl = state.basemap?.getMaplibreMap();
   // Paint/layout changes only need the style graph, not all visible tiles downloaded.
   if (gl?.getLayer("background")) {
-    for (const layer of gl.getStyle().layers) {
-      if (layer.id === "etymap-relief") gl.setLayoutProperty(layer.id,"visibility",$("#relief-toggle").checked ? "visible":"none");
-      else if (layer["source-layer"] === "boundary") gl.setLayoutProperty(layer.id,"visibility",$("#borders-toggle").checked ? "visible":"none");
-      else if (layer.type === "symbol") gl.setLayoutProperty(layer.id,"visibility",$("#labels-toggle").checked ? "visible":"none");
+    const styled=viewBasemap(state.dayStyle,state.theme,state.mapView,{relief:$("#relief-toggle").checked,borders:$("#borders-toggle").checked,labels:$("#labels-toggle").checked});
+    const previous=new Map((state.appliedStyle || gl.getStyle()).layers.map(layer=>[layer.id,layer]));
+    for (const layer of styled.layers) {
+      if(!gl.getLayer(layer.id)) continue;
+      const old=previous.get(layer.id);
+      for(const property of new Set([...Object.keys(old?.paint || {}),...Object.keys(layer.paint || {})])) {
+        if(JSON.stringify(old?.paint?.[property])!==JSON.stringify(layer.paint?.[property])) gl.setPaintProperty(layer.id,property,layer.paint?.[property] ?? null);
+      }
+      if(old?.layout?.visibility!==layer.layout.visibility) gl.setLayoutProperty(layer.id,"visibility",layer.layout.visibility);
     }
+    state.appliedStyle=styled;
   }
   state.fallback?.setStyle({weight:$("#borders-toggle").checked ? .6:0, color:state.theme === "night" ? "#647985":"#95a99a", fillColor:state.theme === "night" ? "#182730":"#eff1e8"});
 }
@@ -75,15 +85,17 @@ function syncThemeButton() {
   document.querySelector('meta[name="theme-color"]').content=state.theme === "night" ? "#142531":"#d8e9e9";
 }
 function applyMapTheme() {
-  const gl=state.basemap?.getMaplibreMap();
-  if(gl?.getLayer("background") && state.dayStyle) {
-    const themed=prepareBasemap(state.dayStyle,state.theme);
-    for(const layer of themed.layers) {
-      const day=state.dayStyle.layers.find(l=>l.id===layer.id);
-      for(const property of Object.keys(nightPaint(day))) gl.setPaintProperty(layer.id,property,layer.paint?.[property] ?? null);
-    }
-  }
   applyBasemapOptions();
+}
+function setMapView(view,{remember=true}={}) {
+  if(!MAP_VIEWS[view]) return;
+  state.mapView=view;
+  $("#relief-toggle").checked=MAP_VIEWS[view].relief;
+  $("#labels-toggle").disabled=view==="minimal";
+  $("#map-view-description").textContent=MAP_VIEWS[view].description;
+  document.querySelectorAll("[data-map-view]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.mapView===view)));
+  applyBasemapOptions();
+  if(remember) try {localStorage.setItem("etymap-map-view",view);} catch { /* session choice */ }
 }
 function setTheme(theme) {
   state.theme=theme;
@@ -144,9 +156,10 @@ async function initMap() {
     state.moving=false;
     $(".atlas").classList.remove("map-moving");
     if (state.mode === "compare") scheduleGeography();
+    else if(state.journeyKind==="proto") renderJourney();
     scheduleAreas();
   });
-  state.map.on("resize", () => { closeCluster(); resizeBasemap(); if(state.mode === "compare") scheduleGeography(); });
+  state.map.on("resize", () => { closeCluster(); resizeBasemap(); if(state.mode === "compare") scheduleGeography(); else if(state.journeyKind==="proto") renderJourney(); });
   try {
     if (!L.maplibreGL) throw new Error("Vector basemap unavailable");
     const response=await fetch("https://tiles.openfreemap.org/styles/positron");
@@ -250,7 +263,7 @@ function wordLabel(item,onSelect=()=>selectWord(currentItem(item))) {
   node.className="word-chip";
   node.style.setProperty("--chip",color(item));
   node.innerHTML='<button type="button" class="map-word-select" aria-label="Explore '+esc(display(item)+' · '+languageName(item.code))+'"><b>'+esc(display(item))+'</b></button>'+readings(item,true)+
-    '<small>'+esc(languageName(item.code))+' <a href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item))+' in '+esc(entrySource(item))+'">↗</a></small>';
+    '<small>'+esc(mapSource(item)+' · '+languageName(item.code))+' <a href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item))+' in '+esc(entrySource(item))+'">↗</a></small>';
   node.title=display(item)+" · "+languageName(item.code)+" · "+entrySource(item);
   node.querySelector("button").addEventListener("click",onSelect);
   node.addEventListener("click",e=>e.stopPropagation());
@@ -290,7 +303,7 @@ function appendClusterWords(record) {
   for(const entry of next) {
     const item=currentItem(entry), row=document.createElement("li");
     row.style.setProperty("--chip",color(item));
-    row.innerHTML='<button type="button" class="stack-word" data-stack-word="'+esc(key(item))+'"><b>'+esc(display(item))+'</b><small>'+esc(languageName(item.code))+'</small></button>'+readings(item,true)+
+    row.innerHTML='<button type="button" class="stack-word" data-stack-word="'+esc(key(item))+'"><b>'+esc(display(item))+'</b><small>'+esc(mapSource(item)+' · '+languageName(item.code))+'</small></button>'+readings(item,true)+
       '<a class="stack-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in '+esc(entrySource(item))+'">↗</a>';
     fragment.append(row);
   }
@@ -411,7 +424,7 @@ function renderGeography() {
         a.setAttribute("aria-label","Explore "+display(representative)+" · "+languageName(representative.code));
         button.textContent="+"+(items.length-1);
         button.setAttribute("aria-label","Show "+(items.length-1)+" more forms near "+languageName(representative.code));
-        record.element.querySelector("small").textContent=languageName(representative.code);
+        record.element.querySelector("small").textContent=mapSource(representative)+" · "+languageName(representative.code);
         record.element.querySelector(".cluster-reading").innerHTML=readings(representative,true);
         record.element.style.setProperty("--chip",color(representative));
       } else {
@@ -451,7 +464,7 @@ function entryRows(items) {
     return '<div class="entry-row" style="--entry-color:'+color(item)+'"><i class="entry-dot"></i><div class="entry-main"><button type="button" class="entry-link" data-select-word="'+esc(key(item))+'" aria-pressed="'+Boolean(state.selection && key(state.selection.item)===key(item))+'"><b>'+esc(display(item))+'</b><span>'+esc(languageName(item.code))+'</span></button>'+readings(item)+'<div class="entry-meta">'+
       (meta.historical ? esc(meta.era || "Historical / extinct")+' · ':'')+
       (!meta.point ? "Location unavailable · ":"")+
-      (item.lexical ? '<span class="source-badge">'+esc(entrySource(item))+'</span> · ':'')+wals+'</div></div><a class="entry-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in '+esc(entrySource(item))+'" title="Open '+esc(entrySource(item))+'">↗</a>'+
+      '<span class="source-badge">'+esc(entrySource(item))+'</span> · '+wals+'</div></div><a class="entry-wiki" href="'+esc(entryUrl(item))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(item)+' · '+languageName(item.code))+' in '+esc(entrySource(item))+'" title="Open '+esc(entrySource(item))+'">↗</a>'+
       (meta.point ? '<button class="locate-button" type="button" data-entry="'+esc(key(item))+'" aria-label="Locate '+esc(languageName(item.code)+' '+display(item))+'">'+locateIcon+'</button>':'')+'</div>';
   }).join("");
 }
@@ -476,14 +489,16 @@ function renderStory() {
     group.count++; clusters.set(label,group);
   }
   const p=period();
+  const lexical=state.entries.some(item=>item.lexical);
   const excluded=state.entries.length-visible(state.entries).length;
   $("#map-kicker").textContent=state.region ? "NEARBY LANGUAGES":"LANGUAGES, WITHOUT BORDERS";
-  $("#map-title").textContent='How we say “'+state.concept+'”';
-  $("#story-content").innerHTML='<div class="stat-row"><div class="stat"><b>'+languages.size+'</b><span>'+(state.lexicalConcept ? 'varieties':'languages')+'</span></div><div class="stat"><b>'+items.length+'</b><span>word forms</span></div><div class="stat"><b>'+located.length+'</b><span>mapped forms</span></div></div>'+
+  const meanings=[...state.dictionaryLayers.values()].filter(layer=>layer.enabled && layer.status==="ready");
+  $("#map-title").textContent=lexical ? (state.entries.some(item=>!item.lexical) ? 'Comparing “'+state.concept+'”' : meanings.length===1 ? '“'+meanings[0].concept.name+'”' : "Dictionary meaning comparison") : 'How we say “'+state.concept+'”';
+  $("#story-content").innerHTML='<div class="stat-row"><div class="stat"><b>'+languages.size+'</b><span>'+(lexical ? 'source varieties':'languages')+'</span></div><div class="stat"><b>'+items.length+'</b><span>form records</span></div><div class="stat"><b>'+located.length+'</b><span>mapped records</span></div></div>'+
     (excluded ? '<p class="source-caveat">'+excluded+' forms outside this period or undated. Reset the time range to see all '+state.entries.length+' forms.</p>':'')+
     (p.to<PRESENT ? '<p class="source-caveat">Historical points are approximate. Contemporary speaker territories are hidden for this period.</p>':'')+
-    (state.lexicalConcept ? '<p class="source-caveat"><span class="source-badge">'+esc(state.lexicalConcept.dataset.toUpperCase())+'</span> Exact source meaning: '+esc(state.lexicalConcept.name)+'. Counts are dictionary varieties and records, not additional unique languages. Grey means lexical evidence only.</p>' : '')+
-    '<div class="legend-title">Words &amp; language profiles</div><p class="source-caveat">'+(state.lexicalConcept ? 'Select a form for its original value, annotations, and dictionary credits. Transcription labels follow the source.' : 'Zoom in for map readings. Select a location or Get pronunciation to load generated IPA.')+'</p><input id="entry-filter" class="entry-filter" type="search" placeholder="Find a language or form…" aria-label="Filter result languages and words" value="'+esc(state.entryQuery)+'" /><div id="entry-list"></div>'+
+    (lexical ? '<p class="source-caveat">Sources share this map, not a verified sense alignment. Counts include overlapping source varieties and duplicate spellings, not additional unique languages. Grey dictionary records are lexical evidence only.</p>' : '')+
+    '<div class="legend-title">Words &amp; language profiles</div><p class="source-caveat">Select a form for its source details. Dictionary transcriptions retain source labels; Wiktionary pronunciation loads on demand.</p><input id="entry-filter" class="entry-filter" type="search" placeholder="Find a language or form…" aria-label="Filter result languages and words" value="'+esc(state.entryQuery)+'" /><div id="entry-list"></div>'+
     '<details><summary>Etymological source colours</summary><ul class="cluster-list">'+[...clusters.values()].sort((a,b)=>b.count-a.count).map(c=>'<li style="--color:'+c.color+'"><i></i><b>'+esc(c.label)+'</b><small>'+c.count+'</small></li>').join("")+'</ul><p class="source-caveat">The first explicit source template in each entry determines its group. Matching colours suggest a shared source; they are not a complete cognacy analysis.</p></details>';
   renderEntryList();
 }
@@ -549,7 +564,7 @@ async function renderAreas() {
   }
 }
 function updateCaption(areas=0) {
-  $("#map-caption-text").textContent=(state.mode==="journey" ? (state.journeyKind==="family" ? "Word family · "+(state.selection?.family?.item.term || "") : "Etymology · "+(state.selection?.item.term || "")) : areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
+  $("#map-caption-text").textContent=(state.mode==="journey" ? (state.journeyKind!=="etymology" ? (state.journeyKind==="proto" ? "Proto tree · ":"Word family · ")+(state.selection?.family?.item.term || "") : "Etymology · "+(state.selection?.item.term || "")) : areas ? areas+" contemporary speaker areas":"Language locations")+" · "+$("#time-label").textContent.toLowerCase();
   if(areas && state.territoryTotal>48) $("#map-caption-text").textContent+=" · zoom in for more areas";
 }
 
@@ -560,18 +575,51 @@ function startSearch() {
   state.controller?.abort();
   state.controller=new AbortController();
   state.search++;
+  state.protoSequence++;
+  for(const layer of state.dictionaryLayers.values()) layer.controller?.abort();
+  state.dictionaryLayers.clear();
+  $("#wiki-source-toggle").checked=true;
+  renderSourceLayers();renderDictionaryChoices();
   state.region=null; state.entryQuery="";
   $("#map-drilldown").classList.add("hidden");
   return {revision:state.search,signal:state.controller.signal};
 }
 function pending(items) { return items.map(i=>({...i,source:"unresolved",sourceName:"Etymology not loaded"})); }
+function rebuildEntries() {
+  state.entries=combinedEntries(state.wikiEntries,state.dictionaryLayers,$("#wiki-source-toggle").checked);
+}
+function renderSourceLayers() {
+  const focused=document.activeElement;
+  const focusAttribute=["data-source-layer","data-retry-layer","data-remove-layer"].find(name=>focused?.hasAttribute(name));
+  const focusValue=focusAttribute && focused.getAttribute(focusAttribute);
+  const sense=state.senses[+$("#sense-select").value];
+  $("#wiki-layer-label").textContent=(sense?.label || state.concept)+" · "+state.wikiEntries.length+" forms";
+  $("#active-dictionaries").innerHTML=[...state.dictionaryLayers].map(([id,layer])=>
+    '<div class="source-layer"><label class="toggle-row"><span><b class="source-badge">'+esc(layer.concept.dataset.toUpperCase())+'</b> '+esc(layer.concept.name)+'<small>'+esc(layer.status==="loading" ? "Loading meaning…" : layer.status==="error" ? layer.error : layer.entries.length+" records · "+layer.concept.varieties+" source varieties")+'</small></span><input type="checkbox" data-source-layer="'+esc(id)+'"'+(layer.enabled ? ' checked':'')+' /></label>'+
+    (layer.status==="error" ? '<button type="button" class="reading-button" data-retry-layer="'+esc(id)+'">Retry meaning ↻</button>':'')+
+    '<button type="button" class="remove-source" data-remove-layer="'+esc(id)+'" aria-label="Remove '+esc(layer.concept.dataset.toUpperCase()+" · "+layer.concept.name)+'">×</button></div>').join("");
+  if(focusAttribute) ($( '['+focusAttribute+'="'+CSS.escape(focusValue)+'"]') || $("#dictionary-browser summary")).focus({preventScroll:true});
+}
+function sourceLayersChanged() {
+  returnToLanguages();
+  state.region=null;state.entryLimit=60;
+  $("#map-drilldown").classList.add("hidden");
+  rebuildEntries();
+  if(state.selection && !state.entries.some(item=>key(item)===key(state.selection.item))) closeSelection();
+  renderSourceLayers();renderDictionaryChoices();renderComparison();
+}
 function renderDictionaryChoices() {
   const target=$("#dictionary-matches");
   if(!state.lexicalIndex) return;
+  const focused=document.activeElement?.dataset.dictionaryConcept;
   const matches=matchConcepts(state.lexicalIndex.concepts,$("#dictionary-query").value,$("#dictionary-source").value);
   $("#dictionary-count").textContent=matches.length+" meanings";
-  target.innerHTML=matches.slice(0,state.lexicalLimit).map(concept=>'<button type="button" class="dictionary-choice" data-dictionary-concept="'+esc(concept.dataset+":"+concept.localId)+'"><span>'+esc(concept.name)+'</span><small>'+esc(concept.dataset.toUpperCase())+' · '+concept.varieties+' varieties · '+concept.forms+' forms</small></button>').join("") || '<p class="source-caveat">No indexed meanings match. Try a shorter gloss, or search Wiktionary above.</p>';
+  target.innerHTML=matches.slice(0,state.lexicalLimit).map(concept=>{
+    const added=state.dictionaryLayers.has(conceptKey(concept));
+    return '<button type="button" class="dictionary-choice" data-dictionary-concept="'+esc(conceptKey(concept))+'" aria-pressed="'+added+'"><span>'+esc(concept.name)+'</span><small>'+esc(concept.dataset.toUpperCase())+' · '+concept.varieties+' varieties · '+concept.forms+' forms · '+(added ? 'Added ✓':'Add to map +')+'</small></button>';
+  }).join("") || '<p class="source-caveat">No indexed meanings match. Try a shorter gloss, or search Wiktionary above.</p>';
   if(matches.length>state.lexicalLimit) target.innerHTML+='<button type="button" class="more-entries" id="more-dictionary-meanings">Show more meanings · '+(matches.length-state.lexicalLimit)+' left</button>';
+  if(focused) target.querySelector('[data-dictionary-concept="'+CSS.escape(focused)+'"]')?.focus({preventScroll:true});
 }
 async function initDictionaries() {
   try {
@@ -585,24 +633,26 @@ async function initDictionaries() {
     $("#dictionary-matches").innerHTML='<p class="source-caveat">Dictionary index unavailable. Wiktionary still works.</p><button type="button" id="retry-dictionaries" class="more-entries">Retry dictionaries</button>';
   }
 }
-async function selectDictionaryConcept(id) {
+async function selectDictionaryConcept(id,{retry=false}={}) {
   const concept=state.lexicalIndex?.concepts.find(c=>c.dataset+":"+c.localId===id);
   if(!concept) return;
-  const {revision,signal}=startSearch();
-  state.entries=[];state.senses=[];state.lexicalConcept=concept;state.concept=concept.name;state.entryLimit=60;
-  $("#sense-field").classList.add("hidden");
-  renderComparison();status("Loading "+concept.dataset.toUpperCase()+" · "+concept.name+"…","loading");
+  const existing=state.dictionaryLayers.get(id);
+  if(existing && !retry) {existing.enabled=true;sourceLayersChanged();return;}
+  existing?.controller?.abort();
+  const controller=new AbortController(), revision=state.search;
+  const layer={concept,controller,enabled:existing?.enabled ?? true,status:"loading",entries:[]};
+  state.dictionaryLayers.set(id,layer);
+  sourceLayersChanged();
   try {
-    const entries=await loadLexicalConcept(concept,{signal});
-    if(revision!==state.search) return;
-    state.entries=entries;
-    renderComparison();fitItems(visible(entries),5);
-    status(concept.dataset.toUpperCase()+" · "+concept.varieties+" dictionary varieties");
-    $("#dictionary-browser").open=false;
+    layer.entries=await loadLexicalConcept(concept,{signal:controller.signal});
+    if(revision!==state.search || state.dictionaryLayers.get(id)!==layer) return;
+    layer.status="ready";
+    // An arriving background layer must not pull the user out of a family map.
+    rebuildEntries();renderSourceLayers();renderDictionaryChoices();renderStory();
+    if(state.mode==="compare") {scheduleGeography();scheduleAreas();}
   } catch(error) {
-    if(revision!==state.search || signal.aborted) return;
-    status("Dictionary meaning unavailable","error");message(error.message);
-    $("#dictionary-browser").open=true;
+    if(revision!==state.search || controller.signal.aborted || state.dictionaryLayers.get(id)!==layer) return;
+    layer.status="error";layer.error=error.message;renderSourceLayers();
   }
 }
 
@@ -632,29 +682,30 @@ function renderLexicalSelection(item) {
     '<p class="source-caveat">'+esc(source.citation)+' <a href="'+esc(source.license)+'" target="_blank" rel="noreferrer">CC BY 4.0</a>. Imported as source-specific records; original annotations are retained.</p>';
 }
 async function enrichAll(revision,signal) {
-  const queue=[...state.entries];
+  const queue=[...state.wikiEntries];
   for(let offset=0;offset<queue.length;offset+=40) {
     if(revision!==state.search) return;
     status("Reading etymologies · "+Math.min(offset+40,queue.length)+" / "+queue.length,"loading");
     const batch=await enrichTranslations(queue.slice(offset,offset+40),{signal});
     if(revision!==state.search) return;
     const updates=new Map(batch.map(i=>[key(i),i]));
-    state.entries=state.entries.map(i=>{
+    state.wikiEntries=state.wikiEntries.map(i=>{
       const update=updates.get(key(i));
       if(!update) return i;
       return {...update, readingStatus:i.readingStatus, transliteration:i.transliteration || update.transliteration,
         ipa:i.ipa?.length ? i.ipa : update.ipa};
     });
+    rebuildEntries();
     // Preserve the user's place in the list and open controls while data arrives.
     renderEntryList(); scheduleGeography();
   }
-  if(revision===state.search) { renderStory(); scheduleAreas(); status("Wiktionary · "+new Set(state.entries.map(i=>i.code)).size+" languages"); }
+  if(revision===state.search) { renderStory(); renderSourceLayers(); scheduleAreas(); status("Wiktionary · "+new Set(state.wikiEntries.map(i=>i.code)).size+" languages · source layers available below search"); }
 }
 async function loadComparison(concept) {
   const clean=concept.trim();
   if(!clean) return;
   const {revision,signal}=startSearch();
-  state.entries=[]; state.concept=clean; state.senses=[]; state.lexicalConcept=null;
+  state.entries=[]; state.wikiEntries=[]; state.concept=clean; state.senses=[];renderSourceLayers();
   $("#dictionary-query").value=clean;state.lexicalLimit=12;renderDictionaryChoices();
   $("#sense-field").classList.add("hidden");
   renderComparison(); status("Reading Wiktionary…","loading");
@@ -676,7 +727,7 @@ async function loadComparison(concept) {
     $("#sense-select").innerHTML=senses.map((s,i)=>'<option value="'+i+'">'+esc(s.label)+' · '+s.entries.length+' forms</option>').join("");
     $("#sense-select").value=String(largest);
     $("#sense-field").classList.toggle("hidden",senses.length<2);
-    state.entries=pending(senses[largest].entries);
+    state.wikiEntries=pending(senses[largest].entries);rebuildEntries();renderSourceLayers();
     renderComparison(); fitItems(visible(state.entries),5);
     await enrichAll(revision,signal);
   } catch(error) {
@@ -689,26 +740,32 @@ async function changeSense() {
   const sense=state.senses[+$("#sense-select").value];
   if(!sense) return;
   const {revision,signal}=startSearch();
-  state.lexicalConcept=null;
-  state.entries=pending(sense.entries);
+  state.wikiEntries=pending(sense.entries);rebuildEntries();renderSourceLayers();
   renderComparison(); fitItems(visible(state.entries),5);
   try { await enrichAll(revision,signal); }
   catch(error) { if(revision===state.search && error.name!=="AbortError") { status("Etymology incomplete","error"); message(error.message); } }
 }
 function journeyNodes() {
-  return state.journeyKind==="family" ? state.selection?.family?.graph?.nodes || [] : state.nodes;
+  return state.journeyKind!=="etymology" ? journeyGraph().nodes : state.nodes;
+}
+function journeyGraph() {
+  const family=state.selection?.family;
+  return state.journeyKind==="proto" && family?.data ? protoGraph(family.data,family.onlyReconstructed) : family?.graph || {nodes:[],edges:[]};
 }
 function renderJourney() {
   if(!state.map) return;
   resetMarkers(); state.areas.clearLayers();
   const all=journeyNodes(), nodes=visible(all);
+  const size=state.map.getSize(),pad=padding();
+  const labels=state.journeyKind==="proto" ? placeFamilyLabels(nodes.filter(node=>node.point).map(item=>({item,point:state.map.latLngToContainerPoint(pointOnMap(item.point))})),labelLayout(state.map.getZoom()),{left:pad.paddingTopLeft[0],right:size.x-pad.paddingBottomRight[0],top:pad.paddingTopLeft[1],bottom:size.y-pad.paddingBottomRight[1]}) : null;
   nodes.forEach(node=>{
     if(!node.point) return;
     const index=all.indexOf(node);
-    const marker=L.marker(pointOnMap(node.point),{icon:L.divIcon({className:"journey-node"+(node.term.startsWith("*") ? " reconstructed":""),html:String(index+1),iconSize:[28,28],iconAnchor:[14,14]})}).addTo(state.markers);
+    const marker=L.marker(pointOnMap(node.point),{title:display(node)+" · "+languageName(node.code),icon:L.divIcon({className:"journey-node"+(node.term.startsWith("*") ? " reconstructed":""),html:state.journeyKind==="proto" && isReconstructed(node) ? "*":String(index+1),iconSize:[28,28],iconAnchor:[14,14]})}).addTo(state.markers);
     marker.bindPopup(()=>popup(node));
     marker.on("popupopen",()=>loadReading(node));
-    marker.bindTooltip(wordLabel(node,state.journeyKind==="family" ? ()=>loadFamily(node):undefined),{permanent:state.journeyKind!=="family" || nodes.length<=40,interactive:true,direction:index%2 ? "left":"right",offset:[index%2 ? -15:15,0],className:"word-label",opacity:1});
+    const direction=labels?.get(node) || (index%2 ? "left":"right");
+    marker.bindTooltip(wordLabel(node,state.journeyKind!=="etymology" ? ()=>loadFamily(node):undefined),{permanent:labels ? labels.has(node) : state.journeyKind==="etymology" || nodes.length<=40,interactive:true,direction,offset:[direction==="left" ? -15:15,0],className:"word-label",opacity:1});
   });
   drawJourneyLines(); updateCaption();
 }
@@ -757,20 +814,27 @@ function renderFamily() {
   $("#load-word-family").hidden=Boolean(family);
   if(!family) { panel.innerHTML=""; return; }
   const item=family.item;
+  const proto=state.mode==="journey" && state.journeyKind==="proto";
   const row=(form,relation="")=>'<div class="family-form"><button type="button" data-family-word="'+esc(key(form))+'"><b>'+esc(display(form))+'</b><small>'+esc(languageName(form.code))+(form.term.startsWith("*") ? ' · reconstructed':'')+(!form.point ? ' · location unavailable' : !visible([form]).length ? ' · outside map period':'')+'</small></button><a href="'+esc(form.url || wiktionaryUrl(form.term,form.code))+'" target="_blank" rel="noreferrer" aria-label="Open '+esc(display(form)+' · '+languageName(form.code))+' in Wiktionary">↗</a>'+readings(form,true)+(relation ? '<span class="family-relation">'+esc(relation)+'</span>':'')+(form.missing ? '<span class="family-relation">Wiktionary entry not yet written</span>':'')+'</div>';
   panel.innerHTML='<section class="family-explorer"><div class="family-heading"><div><p class="selection-kicker">WORD FAMILY · '+esc(languageName(item.code))+'</p><h3 id="family-title" tabindex="-1">'+esc(display(item))+'</h3></div>'+(family.history.length ? '<button type="button" id="family-back" class="reading-button">← Previous family</button>':'')+'</div>'+
     (family.status==="loading" ? '<p class="source-caveat" role="status">Reading descendants and cognates…</p>' : family.status==="error" ? '<p class="source-caveat" role="status">'+esc(family.error)+'</p><button type="button" id="retry-family" class="reading-button">Retry word family ↻</button>' : (()=>{
       const data=family.data, descendants=data.descendants, count=descendants.filter(value=>value.item).length;
-      const mapped=visible(family.graph.nodes).filter(value=>value.point).length;
-      return '<p class="source-caveat">'+count+' descendant forms · '+data.cognates.length+' listed cognates · '+mapped+' located family forms in this period</p>'+
+      const graph=proto ? protoGraph(data,family.onlyReconstructed):family.graph;
+      const mapped=visible(graph.nodes).filter(value=>value.point).length;
+      const protoForms=proto ? new Set(graph.nodes.map(key)):null;
+      const shownDescendants=proto ? descendants.filter(row=>row.item && protoForms.has(key(row.item))):descendants;
+      return (isReconstructed(item) ? '<div class="proto-controls"><button type="button" id="show-proto-map" class="family-launch">'+(proto ? '← Back to language map':'Map reconstructed root &amp; descendants')+'</button><label class="toggle-row"><span>Reconstructions only<small>Hide attested descendants without inventing shortcut arrows</small></span><input id="proto-only-toggle" type="checkbox"'+(family.onlyReconstructed ? ' checked':'')+' /></label></div>':'')+
+        '<p class="source-caveat">'+(proto ? graph.nodes.length+' '+(family.onlyReconstructed ? 'reconstructed':'root and descendant')+' forms · ' : count+' descendant forms · '+data.cognates.length+' listed cognates · ')+mapped+' located family forms in this period</p>'+
+        (proto ? '<p class="source-caveat">Proto view excludes earlier sources and sibling cognates. Dashed-rim * points are reconstructions. Crowded labels appear on hover or keyboard focus; all forms remain below. Approximate locations are not established homelands; arrows are not migration routes.</p>':'')+
         (mapped>40 ? '<p class="source-caveat">Large family: hover or focus map points for labels. All loaded forms remain available below.</p>':'')+
         '<button type="button" id="show-family-map" class="family-launch"'+(!mapped && !(state.mode==="journey" && state.journeyKind==="family") ? ' disabled':'')+'>'+(state.mode==="journey" && state.journeyKind==="family" ? '← Back to language map':'View this family on map')+'</button>'+
         '<p class="source-caveat">Follow a source or proto-form to find its other branches. Word buttons explore that form’s family; ↗ opens Wiktionary.</p>'+
-        '<h4>Sources &amp; earlier forms</h4>'+ (data.ancestors.map(form=>row(form,(form.uncertain ? 'possibly ':'')+(TYPE_LABELS[form.type] || 'explicit source'))).join("") || '<p class="source-caveat">No supported explicit sources in this etymology.</p>')+
-        '<h4>Descendant branches</h4><ol class="family-tree">'+descendants.slice(0,family.limit).map(branch=>'<li style="--depth:'+Math.min(branch.depth,5)+'">'+(branch.item ? row(branch.item,(branch.uncertain ? 'possibly ':'')+branch.relation+(branch.ambiguous ? ' · parent unresolved':'')+(branch.qualifier ? ' · '+branch.qualifier:'')) : '<span class="family-group">'+esc(branch.label)+'</span>')+'</li>').join("")+'</ol>'+
-        (descendants.length>family.limit ? '<button type="button" id="family-more" class="reading-button">Show more branches · '+(descendants.length-family.limit)+' rows remaining</button>':'')+
+        (proto ? '<h4>Reconstructed root</h4>'+row(data.root,'reconstructed root') : '<h4>Sources &amp; earlier forms</h4>'+ (data.ancestors.map(form=>row(form,(form.uncertain ? 'possibly ':'')+(TYPE_LABELS[form.type] || 'explicit source'))).join("") || '<p class="source-caveat">No supported explicit sources in this etymology.</p>'))+
+        '<h4>Descendant branches</h4><ol class="family-tree">'+shownDescendants.slice(0,family.limit).map(branch=>'<li style="--depth:'+Math.min(branch.depth,5)+'">'+(branch.item ? row(branch.item,(branch.uncertain ? 'possibly ':'')+branch.relation+(branch.ambiguous ? ' · parent unresolved':'')+(branch.qualifier ? ' · '+branch.qualifier:'')) : '<span class="family-group">'+esc(branch.label)+'</span>')+'</li>').join("")+'</ol>'+
+        (shownDescendants.length>family.limit ? '<button type="button" id="family-more" class="reading-button">Show more branches · '+(shownDescendants.length-family.limit)+' rows remaining</button>':'')+
+        (proto && family.onlyReconstructed && !shownDescendants.length ? '<p class="source-caveat">No reconstructed descendants are listed in this loaded tree. Turn off “Reconstructions only” to see attested descendants.</p>':'')+
         (!count ? '<p class="source-caveat">'+(data.hasDescendants ? 'No supported linked descendant forms were found in this section.':'No Descendants section was found for this etymology.')+' This does not prove that the word has no descendants.</p>':'')+
-        '<h4>Listed cognates</h4>'+ (data.cognates.map(form=>row(form,'listed cognate · check entry context'+(form.qualifier ? ' · '+form.qualifier:''))).join("") || '<p class="source-caveat">No explicit cognate templates found. Try an earlier form’s descendant tree.</p>')+
+        (proto ? '' : '<h4>Listed cognates</h4>'+ (data.cognates.map(form=>row(form,'listed cognate · check entry context'+(form.qualifier ? ' · '+form.qualifier:''))).join("") || '<p class="source-caveat">No explicit cognate templates found. Try an earlier form’s descendant tree.</p>'))+
         '<p class="source-caveat family-legend">Map: arrows follow documented source/descendant relationships; orange dashes mark borrowing, dotted lines without arrows mark listed cognates. These are not migration routes.</p>'+
         '<p class="source-caveat">Wiktionary’s first etymology only, including descendant subtrees it renders. Not an exhaustive genealogy. Grouping rows are not reconstructed words; intermediate stages may be omitted. * marks a scholarly reconstruction, not an attestation. Locations and periods describe languages approximately.</p>'+
         (data.skipped ? '<p class="source-caveat">'+data.skipped+' unsupported branch or template error(s); consult the source for missing detail.</p>':'')+
@@ -818,18 +882,37 @@ function previousFamily() {
   renderFamily(); $("#family-title")?.focus({preventScroll:true});
 }
 
-function showFamilyMap() {
+function showFamilyMap({kind="family"}={}) {
   const family=state.selection?.family;
-  if(state.mode==="journey" && state.journeyKind==="family") { returnToLanguages(); return; }
-  if(!state.map || family?.status!=="ready" || !visible(family.graph.nodes).some(node=>node.point)) return;
+  if(state.mode==="journey" && state.journeyKind===kind) { returnToLanguages(); return; }
+  if(!state.map || family?.status!=="ready" || (kind==="proto" && !isReconstructed(family.item))) return;
   state.mapSnapshot ||= {center:state.map.getCenter(),zoom:state.map.getZoom()};
-  state.mode="journey"; state.journeyKind="family";
+  state.mode="journey"; state.journeyKind=kind;
   state.map.closePopup(); renderJourney(); scheduleAreas();
   $("#map-drilldown").classList.remove("hidden");
   $("#map-back").textContent="← Language map";
-  $("#map-place").textContent="Family · "+display(family.item);
-  fitItems(visible(family.graph.nodes),6);
+  $("#map-place").textContent=(kind==="proto" ? "Proto tree · ":"Family · ")+display(family.item);
+  fitItems(visible(journeyNodes()),6);
+  if(!visible(journeyNodes()).some(node=>node.point)) message("No located forms in this view and time range. Source-linked forms remain in the sidebar; try all periods.");
   renderSelection();
+}
+
+async function loadProto(term,code) {
+  let item;
+  try {item=protoWord(term,code);} catch(error) {$("#proto-status").textContent=error.message;return;}
+  $("#proto-status").textContent="Loading reconstructed entry and its descendant tree…";
+  const loading=selectWord(item,{retry:state.selection?.status!=="ready"}), selection=state.selection, revision=state.protoSequence;
+  await loading;
+  if(state.selection!==selection || revision!==state.protoSequence) return;
+  if(selection.status!=="ready") {$("#proto-status").textContent=selection.error || "Entry unavailable. Please retry.";return;}
+  const familyLoading=loadFamily(item), family=selection.family;
+  await familyLoading;
+  if(state.selection!==selection || selection.family!==family || revision!==state.protoSequence) return;
+  if(family.status!=="ready") {$("#proto-status").textContent=family.error;return;}
+  $("#proto-status").textContent="Loaded this entry’s listed tree. Follow reconstructed branches for further descendants; coverage is not exhaustive.";
+  showFamilyMap({kind:"proto"});
+  $("#family-title")?.focus({preventScroll:true});
+  $("#family-panel")?.scrollIntoView({block:"start"});
 }
 
 function returnToLanguages() {
@@ -870,6 +953,7 @@ function showEtymologyMap() {
 }
 
 function closeSelection() {
+  state.protoSequence++;
   returnToLanguages();
   state.selectionController?.abort();
   state.selection=null; state.nodes=[];
@@ -879,6 +963,7 @@ function closeSelection() {
 
 async function selectWord(item,{retry=false}={}) {
   if(!item) return;
+  state.protoSequence++;
   if(!retry && state.selection && key(state.selection.item)===key(item)) { revealSelection(); return; }
   returnToLanguages();
   state.selectionController?.abort();
@@ -922,7 +1007,7 @@ function drawJourneyLines() {
   if(state.mode!=="journey" || !state.map) { svg.innerHTML=""; return; }
   const nodes=new Map(visible(journeyNodes()).filter(node=>node.point).map(node=>[key(node),node]));
   const root=state.nodes[0];
-  const edges=state.journeyKind==="family" ? state.selection?.family?.graph?.edges || [] : state.nodes.slice(1).map(node=>({from:key(node),to:key(root),kind:"source"}));
+  const edges=state.journeyKind!=="etymology" ? journeyGraph().edges : state.nodes.slice(1).map(node=>({from:key(node),to:key(root),kind:"source"}));
   const size=state.map.getSize();
   svg.setAttribute("viewBox","0 0 "+size.x+" "+size.y);
   const parts=['<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path class="journey-arrow" d="M0,0 L0,6 L8,3 z"/></marker></defs>'];
@@ -963,6 +1048,22 @@ function bindEvents() {
     if(event.key==="Escape" && state.openCluster) { event.preventDefault(); closeCluster(true); }
   });
   renderSuggestions();
+  $("#proto-examples").innerHTML=PROTO_EXAMPLES.map((item,index)=>'<button type="button" data-proto-example="'+index+'">'+esc(item.label)+'</button>').join("");
+  $("#proto-form").addEventListener("submit",event=>{event.preventDefault();loadProto($("#proto-word").value,resolveLanguage($("#proto-language").value));});
+  $("#proto-examples").addEventListener("click",event=>{
+    const button=event.target.closest("[data-proto-example]");
+    if(!button) return;
+    const item=PROTO_EXAMPLES[+button.dataset.protoExample];
+    $("#proto-language").value=languageName(item.code);$("#proto-word").value=item.term;
+    loadProto(item.term,item.code);
+  });
+  $("#map-view-choices").innerHTML=Object.entries(MAP_VIEWS).map(([id,view])=>'<button type="button" data-map-view="'+id+'" aria-pressed="false"><span class="view-swatch view-'+id+'" aria-hidden="true"></span>'+esc(view.label)+'</button>').join("");
+  let view="relief";
+  try {view=localStorage.getItem("etymap-map-view") || view;} catch { /* optional storage */ }
+  setMapView(MAP_VIEWS[view] ? view:"relief",{remember:false});
+  $("#map-view-choices").addEventListener("click",event=>{
+    const button=event.target.closest("[data-map-view]");if(button) setMapView(button.dataset.mapView);
+  });
   document.addEventListener("click",event=>{
     const button=event.target.closest("[data-pronunciation]");
     if(!button) return;
@@ -990,6 +1091,16 @@ function bindEvents() {
   $("#compare-form").addEventListener("submit",e=>{e.preventDefault();loadComparison($("#concept-input").value);});
   $("#dictionary-query").addEventListener("input",()=>{state.lexicalLimit=12;renderDictionaryChoices();});
   $("#dictionary-source").addEventListener("change",()=>{state.lexicalLimit=12;renderDictionaryChoices();});
+  $("#wiki-source-toggle").addEventListener("change",sourceLayersChanged);
+  $("#active-dictionaries").addEventListener("change",event=>{
+    const id=event.target.dataset.sourceLayer,layer=state.dictionaryLayers.get(id);
+    if(layer) {layer.enabled=event.target.checked;sourceLayersChanged();}
+  });
+  $("#active-dictionaries").addEventListener("click",event=>{
+    const remove=event.target.closest("[data-remove-layer]"),retry=event.target.closest("[data-retry-layer]");
+    if(remove) {state.dictionaryLayers.get(remove.dataset.removeLayer)?.controller?.abort();state.dictionaryLayers.delete(remove.dataset.removeLayer);sourceLayersChanged();}
+    else if(retry) selectDictionaryConcept(retry.dataset.retryLayer,{retry:true});
+  });
   $("#dictionary-matches").addEventListener("click",event=>{
     const choice=event.target.closest("[data-dictionary-concept]");
     if(choice) selectDictionaryConcept(choice.dataset.dictionaryConcept);
@@ -1040,9 +1151,17 @@ function bindEvents() {
     else if(event.target.closest("#family-back")) previousFamily();
     else if(event.target.closest("#family-more")) { state.selection.family.limit+=60; renderFamily(); $("#family-more")?.focus({preventScroll:true}); }
     else if(event.target.closest("#show-family-map")) showFamilyMap();
+    else if(event.target.closest("#show-proto-map")) showFamilyMap({kind:"proto"});
     else if(event.target.closest("#show-etymology-map")) showEtymologyMap();
     else if(event.target.closest("#retry-word-detail")) selectWord(state.selection.item,{retry:true});
     else if(event.target.closest("#close-word-detail")) { closeSelection(); $("#entry-filter")?.focus(); }
+  });
+  $("#word-detail").addEventListener("change",event=>{
+    if(event.target.id!=="proto-only-toggle" || !state.selection?.family) return;
+    state.selection.family.onlyReconstructed=event.target.checked;
+    if(state.mode!=="journey" || state.journeyKind!=="proto") showFamilyMap({kind:"proto"});
+    else {renderJourney();renderFamily();}
+    $("#proto-only-toggle")?.focus({preventScroll:true});
   });
 }
 async function start() {
@@ -1055,6 +1174,7 @@ async function start() {
     $("#language-list").innerHTML=Object.entries(LANGUAGES).filter(([code])=>!code.includes("_")).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([code,m])=>'<option value="'+esc(m.name)+'">'+esc(code+(m.historical ? " · historical":""))+'</option>').join("");
     $("#language-input").placeholder="Search "+count.toLocaleString()+" languages…";
   } catch { message("The full language catalogue could not load. Core languages are available; reload to retry."); }
+  $("#proto-languages").innerHTML=Object.entries(LANGUAGES).filter(([code,meta])=>!code.includes("_") && /^Proto-/.test(meta.wiktionaryName || meta.name)).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([code,meta])=>'<option value="'+esc(meta.name)+'">'+esc(code)+'</option>').join("");
   initDictionaries();
   updatePeriod();
   if(state.search===0) loadComparison("water");

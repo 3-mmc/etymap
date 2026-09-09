@@ -38,15 +38,32 @@
             <div id="suggested-words" aria-label="Suggested words with broad language coverage"></div>
             <div id="sense-field" class="sense-field hidden"><label for="sense-select">Meaning</label><select id="sense-select"></select></div>
           </form>
+          <section class="map-sources" aria-label="Sources on this map">
+            <div class="legend-title">Sources on this map</div>
+            <label class="toggle-row"><span>Wiktionary<small id="wiki-layer-label">Selected translation meaning</small></span><input id="wiki-source-toggle" type="checkbox" checked /></label>
+            <div id="active-dictionaries" aria-live="polite"></div>
           <details id="dictionary-browser" class="dictionary-browser">
-            <summary>Research dictionaries <span id="dictionary-count"></span></summary>
+            <summary>Add dictionary meanings <span id="dictionary-count"></span></summary>
             <p id="dictionary-summary" class="source-caveat">Source-attributed comparative wordlists</p>
             <label class="field-label" for="dictionary-query">Find an exact dictionary meaning</label>
             <input id="dictionary-query" type="search" value="water" placeholder="water, soil, kinship…" autocomplete="off" />
             <label class="field-label" for="dictionary-source">Collection</label>
             <select id="dictionary-source"><option value="all">IDS + WOLD</option value="ids">Intercontinental Dictionary Series</option><option value="wold">World Loanword Database</option></select>
-            <p class="source-caveat">Choose a source meaning to map it. Meanings and varieties stay separate from Wiktionary; similarity is not evidence of cognacy.</p>
+            <p class="source-caveat">Add meanings alongside Wiktionary on this map. Check each definition: the English search is a suggestion, not a verified sense match. Records and varieties keep their source identities; similarity is not evidence of cognacy.</p>
             <div id="dictionary-matches"><p class="source-caveat">Loading dictionary index…</p></div>
+          </details>
+          </section>
+          <details id="proto-browser" class="direct-search">
+            <summary>Proto- reconstructions &amp; descendants</summary>
+            <form id="proto-form">
+              <label for="proto-language">Reconstructed language</label>
+              <input id="proto-language" list="proto-languages" value="Proto-Slavic" autocomplete="off" required />
+              <datalist id="proto-languages"></datalist>
+              <label class="field-label" for="proto-word">Reconstructed form (* optional)</label>
+              <div class="search-row"><input id="proto-word" value="*voda" autocomplete="off" spellcheck="false" required /><button type="submit" aria-label="Map reconstructed root and descendants">↗</button></div>
+              <div id="proto-examples" class="examples"></div>
+              <p id="proto-status" class="source-caveat" role="status">Explore one root and its documented descendant tree, or show only its reconstructed forms. Not a complete index of all reconstructions.</p>
+            </form>
           </details>
           <details class="direct-search"><summary>Look up a word in any language</summary>
           <form id="journey-form">
@@ -62,6 +79,7 @@
         <details class="map-options">
           <summary>Map &amp; time <span id="options-summary">All periods</span></summary>
           <div class="options-body">
+            <fieldset class="map-view-picker"><legend>Map view</legend><div id="map-view-choices"></div><p id="map-view-description" class="fine-print"></p></fieldset>
             <label class="toggle-row"><span>Terrain relief<small>Mountains, valleys &amp; geographic context</small></span><input id="relief-toggle" type="checkbox" checked /></label>
             <label class="toggle-row"><span>Speaker territories<small>Up to 48 nearby areas; zoom in for more</small></span><input id="speaker-toggle" type="checkbox" checked /></label>
             <label class="toggle-row"><span>Lightweight glass<small>Solid surfaces for slower devices</small></span><input id="lightweight-toggle" type="checkbox" /></label>
@@ -81,7 +99,7 @@
           <div class="result-heading"><p id="map-kicker">LANGUAGES, WITHOUT BORDERS</p><h1 id="map-title">A world of words.</h1><div id="live-status" class="live-status" role="status"><i></i>Loading the atlas…</div></div>
           <div id="story-content"></div>
         </section>
-        <details class="about"><summary>About the atlas &amp; sources</summary><p>Select a word to read its etymology or dictionary record in the sidebar. Tap +x to explore nearby languages. Separate ↗ links open the actual source. Colours group explicit etymological sources, not language families.</p><p>Research dictionaries add source-specific IDS and WOLD meanings. Forms, varieties, credits, and annotations are preserved; no automatic Wiktionary alignment or cognacy is claimed. <a href="./data/LEXICAL_SOURCES.md" target="_blank">Dictionary licenses &amp; import notes ↗</a></p><p>WALS adds language profiles and typological context; it does not supply word etymologies or territory boundaries. Missing coordinates never remove a word from the results.</p><p><a href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Wiktionary ↗</a> · <a href="https://glottolog.org" target="_blank" rel="noreferrer">Glottolog ↗</a> · <a href="https://wals.info" target="_blank" rel="noreferrer">WALS ↗</a></p><p>Speaker areas: <a href="https://doi.org/10.5281/zenodo.15287258" target="_blank" rel="noreferrer">Glottography / Asher &amp; Moseley (2007)</a>, CC BY 4.0. <a href="./data/LANGUAGE_SOURCES.md" target="_blank">Language data &amp; date sources ↗</a></p></details>
+        <details class="about"><summary>About the atlas &amp; sources</summary><p>Select a word to read its etymology or dictionary record in the sidebar. Tap +x to explore nearby languages. Separate ↗ links open the actual source. Colours group explicit etymological sources, not language families.</p><p>IDS and WOLD meanings can share the map with Wiktionary. Forms, varieties, credits, and annotations are preserved; co-display does not claim sense equivalence or cognacy. New word searches and Wiktionary sense changes clear added meanings. <a href="./data/LEXICAL_SOURCES.md" target="_blank">Dictionary licenses &amp; import notes ↗</a></p><p>WALS adds language profiles and typological context; it does not supply word etymologies or territory boundaries. Missing coordinates never remove a word from the results.</p><p><a href="https://en.wiktionary.org" target="_blank" rel="noreferrer">Wiktionary ↗</a> · <a href="https://glottolog.org" target="_blank" rel="noreferrer">Glottolog ↗</a> · <a href="https://wals.info" target="_blank" rel="noreferrer">WALS ↗</a></p><p>Speaker areas: <a href="https://doi.org/10.5281/zenodo.15287258" target="_blank" rel="noreferrer">Glottography / Asher &amp; Moseley (2007)</a>, CC BY 4.0. <a href="./data/LANGUAGE_SOURCES.md" target="_blank">Language data &amp; date sources ↗</a></p></details>
       </div>
     </aside>
     <div class="map-tools"><button id="map-home" class="icon-button" type="button" aria-label="Show all results" title="Show all results"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg></button></div>

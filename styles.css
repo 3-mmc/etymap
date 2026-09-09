@@ -326,6 +326,25 @@ input::placeholder { color:var(--muted); opacity:1; }
 #dictionary-matches { max-height:290px; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; margin-top:8px; border-radius:10px; }
 .dictionary-choice { display:block; width:100%; text-align:left; padding:10px 12px; min-height:48px; border-bottom:1px solid var(--line); background:var(--control); }
 .dictionary-choice:hover,.dictionary-choice:focus-visible { background:var(--hover); }
+.dictionary-choice[aria-pressed="true"] { box-shadow:inset 3px 0 var(--accent); background:var(--well); }
+.map-sources { margin-top:16px; border-top:1px solid var(--line); }
+.map-sources .legend-title { margin:12px 0 2px; }
+.map-sources .dictionary-browser { margin-top:2px; }
+.source-layer { position:relative; padding-right:27px; border-top:1px solid var(--line); }
+.source-layer .toggle-row span { min-width:0; overflow-wrap:anywhere; }
+.remove-source { position:absolute; right:0; top:10px; width:26px; height:30px; font-size:19px; border-radius:7px; color:var(--muted); background:transparent; }
+.remove-source:hover { background:var(--hover); }
+.map-view-picker { border:0; padding:9px 0; margin:0; }
+.map-view-picker legend { font-size:12px; font-weight:600; }
+#map-view-choices { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }
+#map-view-choices button { padding:5px; border:1px solid var(--line); border-radius:10px; background:var(--control); color:var(--muted); font-size:10px; min-height:64px; }
+#map-view-choices button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.view-swatch { display:block; height:33px; border-radius:6px; margin-bottom:5px; background:#dde3d6; }
+.view-relief { background:repeating-linear-gradient(135deg,#d9dfc7,#a4b7a0 5px,#e3e7d4 10px,#c1cdba 18px); }
+.view-waterways { background:linear-gradient(115deg,#dce6d2 40%,#69aabf 41% 45%,#dce6d2 46% 62%,#a9d6dc 63%); }
+.view-atlas { background:repeating-linear-gradient(35deg,transparent 0 8px,#a99a7855 9px,transparent 10px 17px),#e6dcc2; }
+.view-minimal { background:linear-gradient(120deg,#edf1e9 64%,#d3e4e6 65%); }
+.proto-controls { padding:7px 0; border-bottom:1px solid var(--line); }
 .dictionary-choice span { display:block; font-size:13px; }
 .dictionary-choice small { display:block; color:var(--muted); font-size:10px; margin-top:3px; }
 .source-badge { display:inline-block; padding:2px 6px; border:1px solid var(--line); border-radius:5px; font-size:9px; font-weight:650; letter-spacing:.4px; color:var(--accent); background:var(--control); }

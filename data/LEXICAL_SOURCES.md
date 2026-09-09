@@ -52,7 +52,10 @@ rewriting. The sidebar exposes all retained original fields for inspection.
 
 - A search ranks possible meanings, but the user chooses an exact source meaning.
   Soil, land, and the planet are not silently merged. Wiktionary and dictionary
-  results have separate meaning selections; the import does not guess sense links.
+  results have separate meaning selections but can share the map. Source-layer
+  checkboxes independently hide Wiktionary or any added meaning. Co-display does
+  not assert equivalence or merge records. New searches and Wiktionary sense
+  changes clear the added meanings; the import does not guess sense links.
 - Dictionary-local variety IDs are preserved. ISO codes do not collapse dialects.
   Source coordinates are used where available (277 IDS and 41 WOLD varieties).
   An absent coordinate can use an unambiguous **exact Glottocode** match in the

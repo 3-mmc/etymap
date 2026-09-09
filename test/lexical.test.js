@@ -1,4 +1,5 @@
 import test from "node:test";
+import { combinedEntries } from "../src/lexical.js";
 import assert from "node:assert/strict";
 import {readFile,readdir} from "node:fs/promises";
 import {gunzipSync,gzipSync} from "node:zlib";
@@ -116,4 +117,14 @@ test("dictionary shards are on-demand, cached, abortable, bounded and retryable"
   const controller=new AbortController();controller.abort();
   await assert.rejects(loadLexicalConcept({...concept,localId:"cancelled"},{signal:controller.signal}),{name:"AbortError"});
   await assert.rejects(loadLexicalConcept({...concept,localId:"../invalid"}),/identifier/);
+});
+test("co-displayed sources preserve duplicate spellings, source identities, and independently hidden or failed layers",()=>{
+  const wiki=[{code:"en",term:"water"}], ids={id:"ids:1",code:"ids:en",term:"water"}, wold={id:"wold:1",code:"wold:en",term:"water"};
+  const layers=new Map([["ids",{status:"ready",enabled:true,entries:[ids]}],["wold",{status:"ready",enabled:true,entries:[wold]}],["failed",{status:"error",enabled:true,entries:[{}]}]]);
+  assert.deepEqual(combinedEntries(wiki,layers),[...wiki,ids,wold]);
+  layers.get("ids").enabled=false;
+  assert.deepEqual(combinedEntries(wiki,layers,false),[wold]);
+  layers.get("wold").status="loading";
+  assert.deepEqual(combinedEntries(wiki,layers,false),[]);
+  assert.equal(wiki.length,1);
 });

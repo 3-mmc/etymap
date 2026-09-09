@@ -4,6 +4,14 @@ export const entryKey = item => item.id || item.code+":"+item.term;
 export const entryUrl = item => item.lexical ? item.lexical.url : wiktionaryUrl(item.term,item.code);
 export const entrySource = item => item.lexical?.dataset.toUpperCase() || "Wiktionary";
 
+export const conceptKey = concept => concept.dataset+":"+concept.localId;
+// Co-display is not a sense alignment or a language/form deduplication. A record
+// keeps its identity even when another dictionary gives the same spelling.
+export function combinedEntries(wiktionary, layers, includeWiktionary=true) {
+  return [...(includeWiktionary ? wiktionary : []), ...[...layers.values()]
+    .filter(layer=>layer.enabled && layer.status==="ready").flatMap(layer=>layer.entries)];
+}
+
 // Full CSV records, including quoted newlines, escaped quotes and empty cells.
 export function parseCSV(text) {
   const rows=[]; let row=[],cell="",quoted=false;
